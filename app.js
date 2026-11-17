@@ -92,8 +92,11 @@
     return {
       version: 1,
       members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [],
-      hidden: [],
-      settings: { weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true },
+      hidden: [], gEvents: [], gSyncedAt: null,
+      settings: {
+        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true,
+        google: { clientId: '', connected: false, email: '', calendars: {}, defaultCal: '' },
+      },
       ui: { view: 'calendar', calView: 'week', listId: null },
     };
   }
@@ -102,12 +105,20 @@
     try {
       const raw = localStorage.getItem(STORE_KEY);
       if (raw) {
-        const s = JSON.parse(raw);
-        const d = defaults();
-        return { ...d, ...s, settings: { ...d.settings, ...(s.settings || {}) }, ui: { ...d.ui, ...(s.ui || {}) } };
+        return mergeState(JSON.parse(raw));
       }
     } catch (e) { console.warn('Calendora: could not read saved data', e); }
     return seed(defaults());
+  }
+
+  function mergeState(s) {
+    const d = defaults();
+    const st = { ...(s.settings || {}) };
+    return {
+      ...d, ...s,
+      settings: { ...d.settings, ...st, google: { ...d.settings.google, ...(st.google || {}) } },
+      ui: { ...d.ui, ...(s.ui || {}) },
+    };
   }
 
   let saveTimer;
@@ -234,12 +245,17 @@
   function eventsOn(ds) {
     if (dayCache.has(ds)) return dayCache.get(ds);
     const dd = parse(ds);
-    const list = state.events.filter(e => isVisible(e) && occursOn(e, ds, dd))
+    const list = allEvents().filter(e => isVisible(e) && occursOn(e, ds, dd))
       .sort((a, b) => (b.allDay - a.allDay) || toMin(a.startTime) - toMin(b.startTime) || a.title.localeCompare(b.title));
     dayCache.set(ds, list);
     return list;
   }
-  const evColor = ev => { const m = (ev.memberIds || []).map(memberById).find(Boolean); return m ? m.color : '#8E8AA0'; };
+  const evColor = ev => {
+    const m = (ev.memberIds || []).map(memberById).find(Boolean);
+    if (m) return m.color;
+    const c = ev.gcal && state.settings.google.calendars[ev.gcal];
+    return c && c.color ? c.color : '#8E8AA0';
+  };
   const evDots = ev => (ev.memberIds || []).map(memberById).filter(Boolean).map(m => `<i style="--c:${m.color}" title="${esc(m.name)}"></i>`).join('');
   function isPast(ev, ds) {
     const t = todayStr();
@@ -312,6 +328,251 @@
     c.height = Math.round(bmp.height * scale);
     c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
     return new Promise(res => c.toBlob(res, 'image/jpeg', 0.86));
+  }
+
+  // ---------------------------------------------------------------- Google Calendar sync
+  // Runs fully in the browser: Google Identity Services gives a short-lived access token,
+  // and the Calendar REST API is called with fetch. No server, no refresh tokens.
+  const GOOGLE_CLIENT_ID = '639692840591-5n38eqpu4b4ldic333i7668ijuceb1iv.apps.googleusercontent.com';
+  const G_SCOPE = 'https://www.googleapis.com/auth/calendar';
+  const G_API = 'https://www.googleapis.com/calendar/v3';
+  const G_TOKEN_KEY = 'calendora.gtoken';
+  const g = { tokenClient: null, tokenClientId: '', token: null, exp: 0, loading: null, syncing: false, error: '', pending: null };
+  try { const t = JSON.parse(localStorage.getItem(G_TOKEN_KEY) || 'null'); if (t && t.exp > Date.now() + 60000) { g.token = t.t; g.exp = t.exp; } } catch (e) { /* ignore */ }
+  const gCfg = () => state.settings.google;
+  const gClientId = () => (gCfg().clientId || GOOGLE_CLIENT_ID || '').trim();
+  const gHasToken = () => !!g.token && g.exp > Date.now() + 30000;
+  const gWritable = c => c && (c.role === 'owner' || c.role === 'writer');
+  const enc = encodeURIComponent;
+
+  function gLoadScript() {
+    if (window.google && window.google.accounts && window.google.accounts.oauth2) return Promise.resolve();
+    if (g.loading) return g.loading;
+    g.loading = new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
+      s.onload = () => res();
+      s.onerror = () => { g.loading = null; rej(new Error('Could not load Google sign-in')); };
+      document.head.appendChild(s);
+    });
+    return g.loading;
+  }
+  async function gInitClient() {
+    await gLoadScript();
+    if (g.tokenClient && g.tokenClientId === gClientId()) return;
+    g.tokenClientId = gClientId();
+    g.tokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: gClientId(),
+      scope: G_SCOPE,
+      callback: resp => {
+        const p = g.pending; g.pending = null;
+        if (resp.error) { if (p) p.rej(new Error(resp.error_description || resp.error)); return; }
+        g.token = resp.access_token;
+        g.exp = Date.now() + (Number(resp.expires_in) || 3600) * 1000;
+        try { localStorage.setItem(G_TOKEN_KEY, JSON.stringify({ t: g.token, exp: g.exp })); } catch (e) { /* ignore */ }
+        if (p) p.res(g.token);
+      },
+      error_callback: err => {
+        const p = g.pending; g.pending = null;
+        const msg = err && err.type === 'popup_closed' ? 'Google sign-in was closed' : err && err.type === 'popup_failed_to_open' ? 'Allow pop-ups for this site to sign in with Google' : 'Google sign-in failed';
+        if (p) p.rej(new Error(msg));
+      },
+    });
+  }
+  // Call from a click so the browser allows the Google pop-up.
+  async function gRequestToken() {
+    if (!gClientId()) throw new Error('Add your Google Client ID first');
+    await gInitClient();
+    return new Promise((res, rej) => {
+      g.pending = { res, rej };
+      g.tokenClient.requestAccessToken({ prompt: gCfg().connected ? '' : 'consent', login_hint: gCfg().email || undefined });
+    });
+  }
+  async function gFetch(path, opts = {}) {
+    if (!gHasToken()) throw Object.assign(new Error('Google needs you to reconnect'), { auth: true });
+    const headers = { Authorization: `Bearer ${g.token}` };
+    if (opts.body) headers['Content-Type'] = 'application/json';
+    const r = await fetch(G_API + path, { ...opts, headers });
+    if (r.status === 401) {
+      g.token = null; localStorage.removeItem(G_TOKEN_KEY); renderSyncPill();
+      throw Object.assign(new Error('Google needs you to reconnect'), { auth: true });
+    }
+    if (r.status === 204 || r.status === 410) return null;
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error((j.error && j.error.message) || `Google error ${r.status}`);
+    return j;
+  }
+  const htmlToText = s => (s ? (new DOMParser().parseFromString(s.replace(/<br\s*\/?>/gi, '\n'), 'text/html').body.textContent || '') : '');
+
+  function gToLocal(ev, calId) {
+    if (!ev || ev.status === 'cancelled' || !ev.start) return null;
+    const c = gCfg().calendars[calId] || {};
+    const base = {
+      id: `g_${calId}_${ev.id}`, source: 'google', gcal: calId, gid: ev.id, gseries: ev.recurringEventId || null,
+      title: ev.summary || '(No title)', location: ev.location || '', notes: htmlToText(ev.description),
+      recur: 'none', recurDays: [], exdates: [], until: null,
+      memberIds: c.memberId ? [c.memberId] : [], readOnly: !gWritable(c) || !!ev.locked,
+    };
+    if (ev.start.date) {
+      const end = ev.end && ev.end.date ? ymd(addDays(parse(ev.end.date), -1)) : ev.start.date;
+      return { ...base, allDay: true, date: ev.start.date, endDate: end > ev.start.date ? end : null, startTime: '', endTime: '' };
+    }
+    const s = new Date(ev.start.dateTime), e = new Date((ev.end && ev.end.dateTime) || ev.start.dateTime);
+    const hm = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return { ...base, allDay: false, date: ymd(s), endDate: null, startTime: hm(s), endTime: ymd(s) === ymd(e) ? hm(e) : '23:59' };
+  }
+  function localToG(e) {
+    const r = { summary: e.title, location: e.location || '', description: e.notes || '' };
+    if (e.allDay) {
+      r.start = { date: e.date };
+      r.end = { date: ymd(addDays(parse(e.endDate || e.date), 1)) };
+    } else {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      r.start = { dateTime: `${e.date}T${e.startTime}:00`, timeZone: tz };
+      r.end = { dateTime: `${e.date}T${e.endTime}:00`, timeZone: tz };
+    }
+    return r;
+  }
+  function toRRule(e) {
+    const until = e.until ? `;UNTIL=${e.until.replace(/-/g, '')}${e.allDay ? '' : 'T235959Z'}` : '';
+    const BY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+    const map = {
+      daily: 'FREQ=DAILY',
+      weekdays: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR',
+      weekly: `FREQ=WEEKLY;BYDAY=${(e.recurDays && e.recurDays.length ? e.recurDays : [parse(e.date).getDay()]).map(i => BY[i]).join(',')}`,
+      biweekly: 'FREQ=WEEKLY;INTERVAL=2',
+      monthly: 'FREQ=MONTHLY',
+      yearly: 'FREQ=YEARLY',
+    };
+    return map[e.recur] ? [`RRULE:${map[e.recur]}${until}`] : null;
+  }
+  function gRemap() {
+    const cals = gCfg().calendars;
+    state.gEvents.forEach(e => { const c = cals[e.gcal]; e.memberIds = c && c.memberId ? [c.memberId] : []; e.readOnly = !gWritable(c); });
+  }
+  function gVisible() {
+    const cals = gCfg().calendars;
+    return state.gEvents.filter(e => { const c = cals[e.gcal]; return !c || c.on !== false; });
+  }
+  const allEvents = () => (state.gEvents && state.gEvents.length ? state.events.concat(gVisible()) : state.events);
+
+  async function gSync({ quiet = false } = {}) {
+    if (g.syncing || !gCfg().connected) return;
+    if (!gHasToken()) { renderSyncPill(); return; }
+    g.syncing = true; g.error = ''; renderSyncPill();
+    try {
+      const list = await gFetch('/users/me/calendarList?maxResults=250');
+      const prevCals = gCfg().calendars, cals = {};
+      (list.items || []).forEach(c => {
+        if (c.primary) gCfg().email = c.id;
+        const prev = prevCals[c.id];
+        cals[c.id] = {
+          name: c.summaryOverride || c.summary || c.id, color: c.backgroundColor || '#8E8AA0', role: c.accessRole, primary: !!c.primary,
+          on: prev ? prev.on : !c.hidden && c.selected !== false, memberId: prev ? prev.memberId : '',
+        };
+      });
+      gCfg().calendars = cals;
+      const tMin = addDays(today(), -62).toISOString(), tMax = addDays(today(), 400).toISOString();
+      const out = [];
+      for (const [id, c] of Object.entries(cals)) {
+        if (!c.on) continue;
+        let pageToken = '';
+        do {
+          const q = new URLSearchParams({ singleEvents: 'true', orderBy: 'startTime', maxResults: '2500', timeMin: tMin, timeMax: tMax });
+          if (pageToken) q.set('pageToken', pageToken);
+          const j = await gFetch(`/calendars/${enc(id)}/events?${q}`);
+          (j.items || []).forEach(ev => { const m = gToLocal(ev, id); if (m) out.push(m); });
+          pageToken = j.nextPageToken || '';
+        } while (pageToken);
+      }
+      state.gEvents = out;
+      state.gSyncedAt = Date.now();
+      save();
+      renderView();
+      if (!quiet) toast(`Synced ${out.length} Google event${out.length === 1 ? '' : 's'}`);
+    } catch (e) {
+      g.error = e.message;
+      if (!quiet) toast(e.message);
+    } finally {
+      g.syncing = false;
+      renderSyncPill();
+    }
+  }
+  async function gEnsureToken() { if (!gHasToken()) await gRequestToken(); }
+  async function gCreate(e, calId) {
+    await gEnsureToken();
+    const body = localToG(e);
+    const rr = toRRule(e);
+    if (rr) body.recurrence = rr;
+    const j = await gFetch(`/calendars/${enc(calId)}/events`, { method: 'POST', body: JSON.stringify(body) });
+    if (rr) await gSync({ quiet: true });
+    else { const m = gToLocal(j, calId); if (m) state.gEvents.push(m); save(); renderView(); }
+  }
+  async function gUpdate(e) {
+    await gEnsureToken();
+    const j = await gFetch(`/calendars/${enc(e.gcal)}/events/${enc(e.gid)}`, { method: 'PATCH', body: JSON.stringify(localToG(e)) });
+    const m = gToLocal(j, e.gcal);
+    state.gEvents = state.gEvents.map(x => (x.id === e.id ? m : x)).filter(Boolean);
+    save(); renderView();
+  }
+  async function gDelete(e, series) {
+    await gEnsureToken();
+    const target = series && e.gseries ? e.gseries : e.gid;
+    await gFetch(`/calendars/${enc(e.gcal)}/events/${enc(target)}`, { method: 'DELETE' });
+    state.gEvents = state.gEvents.filter(x => !(x.gcal === e.gcal && (series && e.gseries ? x.gseries === e.gseries || x.gid === e.gseries : x.id === e.id)));
+    save(); renderView();
+  }
+  async function gConnect() {
+    const inp = $('[data-g-client]');
+    if (inp) gCfg().clientId = inp.value.trim();
+    if (!/\.apps\.googleusercontent\.com$/.test(gClientId())) { toast('That doesn’t look like a Google Client ID'); return; }
+    save();
+    try {
+      await gRequestToken();
+      gCfg().connected = true;
+      save();
+      await gSync();
+      render();
+    } catch (e) { toast(e.message); }
+  }
+  async function gReconnect() {
+    try { await gRequestToken(); renderSyncPill(); await gSync({ quiet: true }); toast('Google reconnected'); }
+    catch (e) { toast(e.message); }
+  }
+  function gDisconnect() {
+    try { if (g.token && window.google && window.google.accounts) window.google.accounts.oauth2.revoke(g.token, () => {}); } catch (e) { /* ignore */ }
+    g.token = null; g.exp = 0; localStorage.removeItem(G_TOKEN_KEY);
+    Object.assign(gCfg(), { connected: false, email: '', calendars: {}, defaultCal: '' });
+    state.gEvents = []; state.gSyncedAt = null;
+    save(); render(); toast('Google Calendar disconnected');
+  }
+  function gDefaultCalFor(memberIds) {
+    const cals = gCfg().calendars;
+    if (memberIds.length === 1) {
+      const hit = Object.entries(cals).find(([, c]) => c.memberId === memberIds[0] && c.on && gWritable(c));
+      if (hit) return hit[0];
+    }
+    const d = gCfg().defaultCal;
+    return d && gWritable(cals[d]) ? d : 'local';
+  }
+  function timeAgo(ts) {
+    const s = Math.round((Date.now() - ts) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.round(s / 60)} min ago`;
+    if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+    return `${Math.round(s / 86400)} d ago`;
+  }
+  function renderSyncPill() {
+    const el = $('#syncPill');
+    if (!el) return;
+    if (!gCfg().connected) { el.hidden = true; return; }
+    el.hidden = false;
+    if (g.syncing) { el.className = 'sync-pill busy'; el.innerHTML = '<span class="gmark">G</span> Syncing…'; el.dataset.action = 'noop'; return; }
+    if (!gHasToken()) { el.className = 'sync-pill warn'; el.innerHTML = '<span class="gmark">G</span> Reconnect Google'; el.dataset.action = 'g-reconnect'; return; }
+    el.className = `sync-pill ${g.error ? 'warn' : 'ok'}`;
+    el.innerHTML = `<span class="gmark">G</span> ${g.error ? 'Sync problem — retry' : state.gSyncedAt ? `Synced ${timeAgo(state.gSyncedAt)}` : 'Sync now'}`;
+    el.dataset.action = 'g-sync';
+    el.title = g.error || 'Sync with Google Calendar now';
   }
 
   // ---------------------------------------------------------------- render: shell
@@ -398,6 +659,7 @@
     renderClock();
     renderMemberFilter();
     renderWeather();
+    renderSyncPill();
     renderView();
   }
   function renderView() {
@@ -791,6 +1053,7 @@
         <label class="field inline"><span>Show dinner on the week view</span><select data-setting="showMeals" data-bool="1">${opt('true', 'Yes', s.showMeals)}${opt('false', 'No', s.showMeals)}</select></label>
         <label class="field inline"><span>Photo frame starts after</span><select data-setting="screensaverMin" data-num="1">${[[0, 'Never'], [1, '1 minute'], [5, '5 minutes'], [10, '10 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour']].map(([v, l]) => opt(v, l, s.screensaverMin)).join('')}</select></label>
       </section>
+      ${googleSection()}
       <section class="card">
         <h3>Weather</h3>
         <p class="muted">${s.weather ? `Showing weather for <b>${esc(s.weather.name)}</b>.` : 'Add a location to see the forecast in the header and on the week view.'}</p>
@@ -812,6 +1075,38 @@
       </section>
       <p class="muted center small">Calendora · works offline · no account needed</p>
     </div>`;
+  }
+
+  function googleSection() {
+    const G = gCfg();
+    let h = `<section class="card"><div class="sec-head"><h3>Google Calendar</h3>${G.connected ? `<span class="status-pill ${gHasToken() ? 'ok' : 'warn'}">${gHasToken() ? 'Connected' : 'Needs reconnect'}</span>` : ''}</div>`;
+    if (!G.connected) {
+      h += `<p class="muted">Two-way sync: your Google calendars show up here, and events you add here can be saved to Google — so they appear on everyone’s phones.</p>
+        <label class="field"><span>Google OAuth Client ID</span><input data-g-client value="${esc(gClientId())}" placeholder="1234567890-abc….apps.googleusercontent.com" autocomplete="off" spellcheck="false"></label>
+        <button class="btn primary" data-action="g-connect"><span class="gmark">G</span> Connect Google Calendar</button>`;
+    } else {
+      const cals = Object.entries(G.calendars);
+      const writable = cals.filter(([, c]) => gWritable(c));
+      h += `<p class="muted">Signed in as <b>${esc(G.email || 'your Google account')}</b>${state.gSyncedAt ? ` · synced ${timeAgo(state.gSyncedAt)}` : ''}. Changes made in Google show up here within a few minutes.</p>
+        <div class="row wrap">
+          ${gHasToken() ? '<button class="btn" data-action="g-sync">Sync now</button>' : '<button class="btn primary" data-action="g-reconnect">Reconnect</button>'}
+          <button class="btn ghost" data-action="g-disconnect">Disconnect</button>
+        </div>
+        <h4>Calendars <small class="muted">— tick to show, and pick whose calendar it is</small></h4>
+        <div class="gcal-list">${cals.map(([id, c]) => `
+          <div class="gcal-row">
+            <label class="gcal-on"><input type="checkbox" data-gcal-on="${esc(id)}" ${c.on ? 'checked' : ''}><span class="gdot" style="--c:${c.color}"></span>
+              <span class="gname">${esc(c.name)}${c.primary ? ' <small class="muted">primary</small>' : ''}${gWritable(c) ? '' : ' <small class="muted">read-only</small>'}</span></label>
+            <select data-gcal-member="${esc(id)}"><option value="">Everyone</option>${state.members.map(m => `<option value="${m.id}" ${c.memberId === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>
+          </div>`).join('') || '<div class="empty-sm">No calendars yet — press Sync now.</div>'}
+        </div>
+        <label class="field inline"><span>New events go to</span><select data-g-default>
+          <option value="">Calendora only (this device)</option>
+          ${writable.map(([id, c]) => `<option value="${esc(id)}" ${G.defaultCal === id ? 'selected' : ''}>Google · ${esc(c.name)}</option>`).join('')}
+        </select></label>
+        <p class="muted small">Tip: when someone is assigned a Google calendar above, new events for just that person are saved to it automatically.</p>`;
+    }
+    return h + '</section>';
   }
 
   // ---------------------------------------------------------------- modals
@@ -865,6 +1160,8 @@
 
   function eventModal(ev, occDate, preset = {}) {
     const isNew = !ev;
+    const isG = !!(ev && ev.source === 'google');
+    const ro = isG && ev.readOnly;
     const date = preset.date || ymd(ui.cursor);
     const st = preset.startTime || defaultStart(date);
     const e = ev ? { ...ev } : {
@@ -872,12 +1169,37 @@
       recur: 'none', recurDays: [], until: null, memberIds: preset.memberIds || [], location: '', notes: '', exdates: [],
     };
     const recurDays = e.recurDays && e.recurDays.length ? e.recurDays : [parse(e.date).getDay()];
+    const gcal = isG ? gCfg().calendars[e.gcal] : null;
+    const writableCals = gCfg().connected ? Object.entries(gCfg().calendars).filter(([, c]) => c.on && gWritable(c)) : [];
+    const calPicker = isNew && writableCals.length ? `<label class="field"><span>Save to</span><select name="gcal">
+        <option value="local">Calendora only (this device)</option>
+        ${writableCals.map(([id, c]) => `<option value="${esc(id)}">Google · ${esc(c.name)}</option>`).join('')}</select></label>` : '';
+    const whoBlock = isG
+      ? `<div class="gsource"><span class="gdot" style="--c:${gcal ? gcal.color : '#8E8AA0'}"></span>Google · ${esc(gcal ? gcal.name : 'Calendar')}${ro ? ' <span class="muted">(read-only)</span>' : ''}</div>`
+      : `<div class="field"><span>Who’s going?</span>${memberPicker(e.memberIds)}<small class="muted">Leave empty for the whole family.</small></div>`;
+    const repeatBlock = isG
+      ? (e.gseries ? '<p class="muted small">Part of a repeating Google event — changes here apply to this one only.</p>' : '')
+      : `<div class="row">
+          <label class="field"><span>Repeat</span><select name="recur">${REPEAT_OPTS.map(([v, l]) => `<option value="${v}" ${e.recur === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label class="field only-repeat"><span>Until <small class="muted">(optional)</small></span><input type="date" name="until" value="${e.until || ''}"></label>
+        </div>
+        <div class="field only-weekly"><span>Repeat on</span>${dayPicker(recurDays, 'recurDays')}</div>`;
+
+    const busy = async (form, fn, msg) => {
+      const btn = $('button[type=submit]', form);
+      if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+      try { await fn(); closeModal(); toast(msg); }
+      catch (err) { toast(err.message); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } }
+    };
+    const gRun = async (fn, msg) => { try { await fn(); toast(msg); } catch (err) { toast(err.message); } };
+
     modal({
-      title: isNew ? 'New event' : 'Edit event',
+      title: ro ? 'Event' : isNew ? 'New event' : 'Edit event',
       cls: 'event-modal',
       body: `
-        <input class="title-input" name="title" placeholder="What’s happening?" value="${esc(e.title)}" autofocus required maxlength="120" />
-        <div class="field"><span>Who’s going?</span>${memberPicker(e.memberIds)}<small class="muted">Leave empty for the whole family.</small></div>
+        <input class="title-input" name="title" placeholder="What’s happening?" value="${esc(e.title)}" autofocus required maxlength="200" />
+        ${whoBlock}
+        ${calPicker}
         <label class="switch"><input type="checkbox" name="allDay" ${e.allDay ? 'checked' : ''}><span class="track"></span><span>All day</span></label>
         <div class="row">
           <label class="field"><span>${e.allDay ? 'Starts' : 'Date'}</span><input type="date" name="date" value="${e.date}" required></label>
@@ -885,39 +1207,49 @@
           <label class="field only-timed"><span>To</span><input type="time" name="endTime" value="${e.endTime || ''}" step="300"></label>
           <label class="field only-allday"><span>Ends</span><input type="date" name="endDate" value="${e.endDate || e.date}"></label>
         </div>
-        <div class="row">
-          <label class="field"><span>Repeat</span><select name="recur">${REPEAT_OPTS.map(([v, l]) => `<option value="${v}" ${e.recur === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-          <label class="field only-repeat"><span>Until <small class="muted">(optional)</small></span><input type="date" name="until" value="${e.until || ''}"></label>
-        </div>
-        <div class="field only-weekly"><span>Repeat on</span>${dayPicker(recurDays, 'recurDays')}</div>
-        <label class="field"><span>Location</span><input name="location" value="${esc(e.location)}" placeholder="Add a place" maxlength="120"></label>
+        ${repeatBlock}
+        <label class="field"><span>Location</span><input name="location" value="${esc(e.location)}" placeholder="Add a place" maxlength="200"></label>
         <label class="field"><span>Notes</span><textarea name="notes" rows="2" placeholder="Anything to remember?">${esc(e.notes)}</textarea></label>`,
       onOpen(form) {
         const sync = () => {
           form.classList.toggle('is-allday', form.elements.allDay.checked);
-          form.classList.toggle('is-repeat', form.elements.recur.value !== 'none');
-          form.classList.toggle('is-weekly', form.elements.recur.value === 'weekly');
+          const r = form.elements.recur ? form.elements.recur.value : 'none';
+          form.classList.toggle('is-repeat', r !== 'none');
+          form.classList.toggle('is-weekly', r === 'weekly');
         };
         form.addEventListener('change', sync); sync();
         form.elements.startTime.addEventListener('change', () => {
           const sEl = form.elements.startTime, eEl = form.elements.endTime;
           if (!eEl.value || toMin(eEl.value) <= toMin(sEl.value)) eEl.value = fromMin(Math.min(toMin(sEl.value) + 60, 23 * 60 + 59));
         });
+        const calSel = form.elements.gcal;
+        if (calSel) {
+          let touched = false;
+          calSel.addEventListener('change', () => { touched = true; });
+          const pick = () => { if (!touched) calSel.value = gDefaultCalFor(fall(form, 'memberIds')); };
+          form.addEventListener('change', ev2 => { if (ev2.target.name === 'memberIds') pick(); });
+          pick();
+        }
+        if (ro) $$('input, select, textarea', form).forEach(i => { i.disabled = true; });
       },
-      onSave(form) {
+      onSave: ro ? null : form => {
         const title = fval(form, 'title');
         if (!title) { form.elements.title.focus(); form.elements.title.classList.add('invalid'); return false; }
         const allDay = form.elements.allDay.checked;
         const out = {
           ...e, title, allDay,
           date: fval(form, 'date') || e.date,
-          memberIds: fall(form, 'memberIds'),
-          recur: fval(form, 'recur'),
-          recurDays: fall(form, 'recurDays').map(Number),
-          until: fval(form, 'until') || null,
           location: fval(form, 'location'),
           notes: fval(form, 'notes'),
         };
+        if (!isG) {
+          out.memberIds = fall(form, 'memberIds');
+          out.recur = fval(form, 'recur');
+          out.recurDays = fall(form, 'recurDays').map(Number);
+          out.until = fval(form, 'until') || null;
+          if (out.recur !== 'weekly') out.recurDays = [];
+          else if (!out.recurDays.length) out.recurDays = [parse(out.date).getDay()];
+        }
         if (allDay) {
           out.startTime = ''; out.endTime = '';
           const ed = fval(form, 'endDate');
@@ -929,14 +1261,28 @@
           if (!et || toMin(et) <= toMin(out.startTime)) et = fromMin(Math.min(toMin(out.startTime) + 60, 23 * 60 + 59));
           out.endTime = et;
         }
-        if (out.recur !== 'weekly') out.recurDays = [];
-        else if (!out.recurDays.length) out.recurDays = [parse(out.date).getDay()];
+        if (isG) { busy(form, () => gUpdate(out), 'Saved to Google Calendar'); return false; }
+        const target = form.elements.gcal ? form.elements.gcal.value : 'local';
+        if (isNew && target !== 'local') { busy(form, () => gCreate(out, target), 'Added to Google Calendar'); return false; }
         if (isNew) state.events.push(out);
         else state.events = state.events.map(x => x.id === out.id ? out : x);
         save(); renderView();
         toast(isNew ? 'Event added' : 'Event updated');
       },
-      onDelete: isNew ? null : () => {
+      onDelete: isNew || ro ? null : () => {
+        if (isG) {
+          if (e.gseries) {
+            choice('Delete repeating event', `“${esc(e.title)}” repeats in Google Calendar. What should be deleted?`, [
+              { label: 'Only this one', fn: () => gRun(() => gDelete(e, false), 'Deleted from Google Calendar') },
+              { label: 'All events in the series', cls: 'danger', fn: () => gRun(() => gDelete(e, true), 'Series deleted from Google Calendar') },
+            ]);
+          } else {
+            choice('Delete event?', `“${esc(e.title)}” will also be deleted from Google Calendar.`, [
+              { label: 'Delete', cls: 'danger', fn: () => gRun(() => gDelete(e, false), 'Deleted from Google Calendar') },
+            ]);
+          }
+          return false;
+        }
         const del = () => { state.events = state.events.filter(x => x.id !== e.id); save(); renderView(); toast('Event deleted'); };
         if (e.recur && e.recur !== 'none' && occDate) {
           choice('Delete repeating event', `“${esc(e.title)}” repeats. What should be deleted?`, [
@@ -1007,6 +1353,8 @@
             state.chores = state.chores.filter(c => c.memberId !== mm.id);
             state.events.forEach(e => { e.memberIds = e.memberIds.filter(id => id !== mm.id); });
             state.hidden = state.hidden.filter(id => id !== mm.id);
+            Object.values(state.settings.google.calendars).forEach(c => { if (c.memberId === mm.id) c.memberId = ''; });
+            gRemap();
             save(); render();
           },
         }]);
@@ -1134,7 +1482,12 @@
       state.hidden = state.hidden.includes(id) ? state.hidden.filter(x => x !== id) : [...state.hidden, id];
       save(); renderMemberFilter(); renderView();
     },
-    'edit-event'(el) { const ev = state.events.find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
+    'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
+    noop() {},
+    'g-connect'() { gConnect(); },
+    'g-reconnect'() { gReconnect(); },
+    'g-sync'() { if (!gHasToken()) gReconnect(); else gSync(); },
+    'g-disconnect'() { choice('Disconnect Google Calendar?', 'Google events will be removed from this screen. Nothing is deleted from Google.', [{ label: 'Disconnect', cls: 'danger', fn: gDisconnect }]); },
     'new-event'(el) { eventModal(null, null, { date: el.dataset.date }); },
     'new-event-at'(el, evt) {
       const rect = el.getBoundingClientRect();
@@ -1201,8 +1554,8 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     },
     import() { $('#importInput').click(); },
-    'reset-demo'() { choice('Load the demo family?', 'This replaces everything currently saved (photos are kept).', [{ label: 'Load demo', cls: 'danger', fn: () => { state = seed(defaults()); state.ui.view = 'calendar'; save(); render(); } }]); },
-    'clear-all'() { choice('Start fresh?', 'This deletes all family members, events, chores, lists and meals saved in this browser.', [{ label: 'Delete everything', cls: 'danger', fn: () => { state = defaults(); save(); render(); memberModal(); } }]); },
+    'reset-demo'() { choice('Load the demo family?', 'This replaces everything currently saved (photos are kept).', [{ label: 'Load demo', cls: 'danger', fn: () => { const keep = state.settings.google, ge = state.gEvents; state = seed(defaults()); state.settings.google = keep; state.gEvents = ge; gRemap(); state.ui.view = 'calendar'; save(); render(); } }]); },
+    'clear-all'() { choice('Start fresh?', 'This deletes all family members, events, chores, lists and meals saved in this browser.', [{ label: 'Delete everything', cls: 'danger', fn: () => { const keep = state.settings.google, ge = state.gEvents; state = defaults(); state.settings.google = keep; state.gEvents = ge; Object.values(keep.calendars).forEach(c => { c.memberId = ''; }); gRemap(); save(); render(); memberModal(); } }]); },
   };
   const currentList = () => state.lists.find(l => l.id === state.ui.listId);
 
@@ -1239,7 +1592,18 @@
   });
 
   document.addEventListener('change', evt => {
-    const el = evt.target.closest('[data-setting]'); if (!el) return;
+    const t = evt.target;
+    if (t.matches('[data-g-client]')) { gCfg().clientId = t.value.trim(); save(); if (gClientId()) gLoadScript().catch(() => {}); return; }
+    if (t.matches('[data-gcal-on]')) {
+      const c = gCfg().calendars[t.dataset.gcalOn]; if (!c) return;
+      c.on = t.checked; save(); renderView(); if (c.on) gSync({ quiet: true }); return;
+    }
+    if (t.matches('[data-gcal-member]')) {
+      const c = gCfg().calendars[t.dataset.gcalMember]; if (!c) return;
+      c.memberId = t.value; gRemap(); save(); toast(`${c.name} → ${t.value ? memberById(t.value).name : 'Everyone'}`); return;
+    }
+    if (t.matches('[data-g-default]')) { gCfg().defaultCal = t.value; save(); return; }
+    const el = t.closest('[data-setting]'); if (!el) return;
     let v = el.value;
     if (el.dataset.num) v = Number(v);
     if (el.dataset.bool) v = v === 'true';
@@ -1269,8 +1633,7 @@
     try {
       const data = JSON.parse(await f.text());
       if (!data || !Array.isArray(data.members) || !Array.isArray(data.events)) throw new Error('bad file');
-      const d = defaults();
-      state = { ...d, ...data, settings: { ...d.settings, ...(data.settings || {}) }, ui: { ...d.ui, ...(data.ui || {}) } };
+      state = mergeState(data);
       save(); render(); fetchWeather(); toast('Backup imported');
     } catch (err) { toast('That file is not a Calendora backup'); }
   });
@@ -1383,4 +1746,14 @@
   render();
   fetchWeather();
   setInterval(renderClock, 1000);
+  if (gCfg().connected) {
+    gLoadScript().catch(() => {});
+    gSync({ quiet: true });
+  } else if (gClientId()) gLoadScript().catch(() => {});
+  // keep Google in step: every 5 minutes, and whenever the tab comes back into view
+  setInterval(() => { if (gCfg().connected && gHasToken()) gSync({ quiet: true }); else renderSyncPill(); }, 5 * 60 * 1000);
+  setInterval(renderSyncPill, 60 * 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && gCfg().connected && gHasToken() && Date.now() - (state.gSyncedAt || 0) > 60000) gSync({ quiet: true });
+  });
 })();
