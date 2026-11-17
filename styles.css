@@ -475,3 +475,10 @@ form:not(.is-allday) .only-timed, form.is-allday .only-allday, form.is-repeat .o
 .logo.big { width: 64px; height: 64px; border-radius: 20px; align-self: center; margin: 0; }
 .logo.big span { width: 28px; height: 28px; border-width: 6px; }
 .lock-error { color: #C2412D; font-weight: 800; min-height: 20px; font-size: 14px; }
+.feed-status { display: block; font-weight: 700; font-size: 12.5px; }
+.warn-text { color: #B5651D; }
+.ical-add { margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.ical-add .row { align-items: flex-end; }
+.ical-add .row .btn { margin-bottom: 14px; }
+.howto summary { cursor: pointer; font-weight: 800; color: var(--accent); }
+.howto ol { margin: 10px 0; padding-left: 22px; line-height: 1.7; }

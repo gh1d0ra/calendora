@@ -18,6 +18,7 @@ A touch-friendly family wall calendar that runs in any web browser. Put it full-
 - **Meal plan**: a week grid for breakfast, lunch, dinner and snacks. Dinner also shows on the week view. You can copy last week's meals, and a meal's ingredients can be sent to the grocery list.
 - **Photo frame**: when the calendar sits idle, it plays a slideshow of your photos with the time, the weather and today's events.
 - **Google Calendar two-way sync**: show your Google calendars, give each one to a family member, and save new events straight to Google.
+- **Apple (iCloud) calendars, read-only**: paste a calendar's Public Calendar link and choose whose it is. The Worker fetches the feed and the app expands repeating events, time zones, skipped dates and moved instances. It refreshes about every 15 minutes.
 - **Weather**: free forecast from Open-Meteo, shown in the header and on each day in the week view.
 - Full-screen mode, a 12- or 24-hour clock, a choice of first day of the week, and backup export and import.
 

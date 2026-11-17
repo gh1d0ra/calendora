@@ -91,7 +91,7 @@
   function defaults() {
     return {
       version: 1,
-      members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [],
+      members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [],
       hidden: [], gEvents: [], gSyncedAt: null,
       settings: {
         weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true,
@@ -254,6 +254,7 @@
   const evColor = ev => {
     const m = (ev.memberIds || []).map(memberById).find(Boolean);
     if (m) return m.color;
+    if (ev.source === 'apple') { const f = icalFeed(ev.feed); return f && f.color ? f.color : '#8E8AA0'; }
     const c = ev.gcal && state.settings.google.calendars[ev.gcal];
     return c && c.color ? c.color : '#8E8AA0';
   };
@@ -455,7 +456,10 @@
     const cals = gCfg().calendars;
     return state.gEvents.filter(e => { const c = cals[e.gcal]; return !c || c.on !== false; });
   }
-  const allEvents = () => (state.gEvents && state.gEvents.length ? state.events.concat(gVisible()) : state.events);
+  const allEvents = () => {
+    const ge = state.gEvents && state.gEvents.length ? gVisible() : [];
+    return ge.length || ical.flat.length ? state.events.concat(ge, ical.flat) : state.events;
+  };
 
   async function gSync({ quiet = false } = {}) {
     if (g.syncing || !gCfg().connected) return;
@@ -1064,6 +1068,7 @@
           <button class="btn ghost" data-action="cloud-logout">Sign out this device</button>
         </div>
       </section>` : ''}
+      ${cloud.mode === 'server' ? icalSection() : ''}
       ${googleSection()}
       <section class="card">
         <h3>Weather</h3>
@@ -1171,7 +1176,8 @@
 
   function eventModal(ev, occDate, preset = {}) {
     const isNew = !ev;
-    const isG = !!(ev && ev.source === 'google');
+    const isG = !!(ev && (ev.source === 'google' || ev.source === 'apple'));
+    const isApple = !!(ev && ev.source === 'apple');
     const ro = isG && ev.readOnly;
     const date = preset.date || ymd(ui.cursor);
     const st = preset.startTime || defaultStart(date);
@@ -1180,16 +1186,19 @@
       recur: 'none', recurDays: [], until: null, memberIds: preset.memberIds || [], location: '', notes: '', exdates: [],
     };
     const recurDays = e.recurDays && e.recurDays.length ? e.recurDays : [parse(e.date).getDay()];
-    const gcal = isG ? gCfg().calendars[e.gcal] : null;
+    const gcal = isG && !isApple ? gCfg().calendars[e.gcal] : null;
+    const afeed = isApple ? icalFeed(e.feed) : null;
+    const srcLabel = isApple ? `Apple · ${esc(afeed ? afeed.name : 'Calendar')}` : `Google · ${esc(gcal ? gcal.name : 'Calendar')}`;
+    const srcColor = isApple ? (afeed && afeed.color) || '#8E8AA0' : gcal ? gcal.color : '#8E8AA0';
     const writableCals = gCfg().connected ? Object.entries(gCfg().calendars).filter(([, c]) => c.on && gWritable(c)) : [];
     const calPicker = isNew && writableCals.length ? `<label class="field"><span>Save to</span><select name="gcal">
         <option value="local">Calendora only (this device)</option>
         ${writableCals.map(([id, c]) => `<option value="${esc(id)}">Google · ${esc(c.name)}</option>`).join('')}</select></label>` : '';
     const whoBlock = isG
-      ? `<div class="gsource"><span class="gdot" style="--c:${gcal ? gcal.color : '#8E8AA0'}"></span>Google · ${esc(gcal ? gcal.name : 'Calendar')}${ro ? ' <span class="muted">(read-only)</span>' : ''}</div>`
+      ? `<div class="gsource"><span class="gdot" style="--c:${srcColor}"></span>${srcLabel}${ro ? ` <span class="muted">(read-only${isApple ? ' — edit it on the iPhone' : ''})</span>` : ''}</div>`
       : `<div class="field"><span>Who’s going?</span>${memberPicker(e.memberIds)}<small class="muted">Leave empty for the whole family.</small></div>`;
     const repeatBlock = isG
-      ? (e.gseries ? '<p class="muted small">Part of a repeating Google event — changes here apply to this one only.</p>' : '')
+      ? (e.gseries && !isApple ? '<p class="muted small">Part of a repeating Google event — changes here apply to this one only.</p>' : '')
       : `<div class="row">
           <label class="field"><span>Repeat</span><select name="recur">${REPEAT_OPTS.map(([v, l]) => `<option value="${v}" ${e.recur === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
           <label class="field only-repeat"><span>Until <small class="muted">(optional)</small></span><input type="date" name="until" value="${e.until || ''}"></label>
@@ -1495,6 +1504,14 @@
     },
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
+    'ical-refresh'() { icalRefresh({ fresh: true }); },
+    'ical-remove'(el) {
+      const f = icalFeed(el.dataset.id); if (!f) return;
+      choice(`Remove “${esc(f.name)}”?`, 'Its events disappear from the board. Nothing changes in iCloud.', [{
+        label: 'Remove', cls: 'danger',
+        fn: () => { state.icalFeeds = icalFeeds().filter(x => x.id !== f.id); delete ical.data[f.id]; saveIcalCache(); icalRemap(); save(); renderView(); },
+      }]);
+    },
     'cloud-sync'() { if (JSON.stringify(sharedPart()) !== cloud.lastStr) cloudPush(); else cloudPull(); toast('Syncing…'); },
     'cloud-passcode'() { passcodeModal(); },
     'cloud-logout-all'() {
@@ -1600,6 +1617,27 @@
     const f = evt.target.closest('[data-form]'); if (!f) return;
     evt.preventDefault();
     if (f.dataset.form === 'setup' || f.dataset.form === 'login') { lockSubmit(f); return; }
+    if (f.dataset.form === 'ical-add') {
+      const url = f.elements.url.value.trim();
+      if (!/^(webcals?|https?):\/\/\S+$/i.test(url)) { toast('Paste the link that starts with webcal://'); return; }
+      if (icalFeeds().some(x => x.url === url)) { toast('That calendar is already added'); return; }
+      const memberId = f.elements.member.value;
+      const used = icalFeeds().map(x => x.color);
+      const feed = {
+        id: uid(), url, memberId, on: true,
+        name: f.elements.name.value.trim() || (memberId ? `${memberById(memberId).name}’s iCloud` : 'iCloud calendar'),
+        color: ['#A2845E', '#5C7CFA', '#2BB3A3', '#E56BB0', '#F2A541', '#8D6E63'].find(c => !used.includes(c)) || '#A2845E',
+      };
+      state.icalFeeds = [...icalFeeds(), feed];
+      save({ localOnly: true });
+      renderView();
+      toast('Adding calendar…');
+      await cloudPush(true);
+      await icalRefresh({ fresh: true, only: feed.id });
+      const d = ical.data[feed.id];
+      toast(d && !d.error ? `Added ${feed.name} · ${d.events.length} events` : (d && d.error) || 'Added — it will load shortly');
+      return;
+    }
     if (f.dataset.form === 'add-item') {
       const text = f.elements.text.value.trim(); const l = currentList();
       if (!text || !l) return;
@@ -1633,6 +1671,10 @@
       c.memberId = t.value; gRemap(); save(); toast(`${c.name} → ${t.value ? memberById(t.value).name : 'Everyone'}`); return;
     }
     if (t.matches('[data-g-default]')) { gCfg().defaultCal = t.value; save(); return; }
+    if (t.matches('[data-ical-member]')) {
+      const f = icalFeed(t.dataset.icalMember); if (!f) return;
+      f.memberId = t.value; icalRemap(); save(); toast(`${f.name} → ${t.value ? memberById(t.value).name : 'Everyone'}`); return;
+    }
     const el = t.closest('[data-setting]'); if (!el) return;
     let v = el.value;
     if (el.dataset.num) v = Number(v);
@@ -1705,7 +1747,7 @@
   // When the app is served by the Calendora Worker, the family board is shared through /api.
   // Anywhere else (GitHub Pages, a local file) it runs in local-only mode.
   const CLOUD_KEY = 'calendora.cloud';
-  const SHARED_KEYS = ['members', 'events', 'chores', 'choreDone', 'lists', 'meals', 'rewards', 'redemptions'];
+  const SHARED_KEYS = ['members', 'events', 'chores', 'choreDone', 'lists', 'meals', 'rewards', 'redemptions', 'icalFeeds'];
   const cloud = { mode: 'unknown', configured: false, signedIn: false, version: 0, lastStr: '', pushing: false, again: false, offline: false, lastSync: 0, timer: null };
   try { const m = JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null'); if (m) { cloud.version = m.version || 0; cloud.lastStr = m.lastStr || ''; cloud.lastSync = m.lastSync || 0; cloud.known = true; } } catch (e) { /* ignore */ }
   const saveCloudMeta = () => { try { localStorage.setItem(CLOUD_KEY, JSON.stringify({ version: cloud.version, lastStr: cloud.lastStr, lastSync: cloud.lastSync })); } catch (e) { /* ignore */ } };
@@ -1723,6 +1765,7 @@
     if (data.settings) state.settings = { ...state.settings, ...data.settings, google: state.settings.google };
     state.hidden = state.hidden.filter(id => state.members.some(m => m.id === id));
     gRemap();
+    icalRemap();
     save({ localOnly: true });
     render();
   }
@@ -1771,6 +1814,7 @@
     cloud.lastSync = Date.now();
     saveCloudMeta();
     renderCloudStatus();
+    icalRefresh();
   }
 
   function cloudQueuePush() {
@@ -1907,6 +1951,330 @@
     });
   }
 
+  // ---------------------------------------------------------------- Apple / iCal calendars (read-only)
+  // The Worker fetches each feed (e.g. an iCloud "Public Calendar" link); this code parses the
+  // iCalendar text and expands repeating events in the browser.
+  const ICAL_KEY = 'calendora.ical';
+  const DAY_MS = 86400000;
+  const ical = { data: {}, flat: [], loading: false, lastFetch: 0 };
+  try { const c = JSON.parse(localStorage.getItem(ICAL_KEY) || 'null'); if (c) { ical.data = c.data || {}; ical.lastFetch = c.at || 0; } } catch (e) { /* ignore */ }
+  const saveIcalCache = () => { try { localStorage.setItem(ICAL_KEY, JSON.stringify({ data: ical.data, at: ical.lastFetch })); } catch (e) { /* storage full: keep in memory */ } };
+  const icalFeeds = () => (Array.isArray(state.icalFeeds) ? state.icalFeeds : []);
+  const icalFeed = id => icalFeeds().find(f => f.id === id);
+
+  function icalRemap() {
+    ical.flat = [];
+    Object.entries(ical.data).forEach(([id, d]) => {
+      const f = icalFeed(id);
+      if (!f || f.on === false) return;
+      const mids = f.memberId && memberById(f.memberId) ? [f.memberId] : [];
+      (d.events || []).forEach(e => { e.memberIds = mids; ical.flat.push(e); });
+    });
+  }
+
+  const icsUnescape = s => (s || '').replace(/\\n/gi, '\n').replace(/\\([,;\\])/g, '$1');
+  function icsParse(text) {
+    const lines = text.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
+    const events = [];
+    let cur = null, skip = 0;
+    for (const line of lines) {
+      if (line === 'BEGIN:VEVENT') { cur = { EXDATE: [] }; skip = 0; continue; }
+      if (line === 'END:VEVENT') { if (cur) events.push(cur); cur = null; continue; }
+      if (!cur) continue;
+      if (line.startsWith('BEGIN:')) { skip++; continue; } // e.g. VALARM
+      if (line.startsWith('END:')) { skip = Math.max(0, skip - 1); continue; }
+      if (skip) continue;
+      const i = line.indexOf(':');
+      if (i < 0) continue;
+      const [name, ...params] = line.slice(0, i).split(';');
+      const p = {};
+      params.forEach(x => { const j = x.indexOf('='); if (j > 0) p[x.slice(0, j).toUpperCase()] = x.slice(j + 1).replace(/^"|"$/g, ''); });
+      const N = name.toUpperCase(), v = line.slice(i + 1);
+      if (N === 'EXDATE') v.split(',').forEach(x => cur.EXDATE.push({ v: x, p }));
+      else cur[N] = { v, p };
+    }
+    return events;
+  }
+  function icsTime(prop) {
+    if (!prop) return null;
+    const v = String(prop.v).trim();
+    const m = v.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?(Z)?)?/);
+    if (!m) return null;
+    const allDay = prop.p.VALUE === 'DATE' || !m[4];
+    return { allDay, y: +m[1], mo: +m[2], d: +m[3], h: +(m[4] || 0), mi: +(m[5] || 0), s: +(m[6] || 0), utc: !!m[7], tz: prop.p.TZID || null };
+  }
+  const wallOf = t => Date.UTC(t.y, t.mo - 1, t.d, t.h, t.mi, t.s); // ms whose UTC fields equal the wall-clock fields
+  const tzFmt = {};
+  function tzOffset(ts, tz) {
+    let f = tzFmt[tz];
+    if (!f) f = tzFmt[tz] = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+    const p = {};
+    f.formatToParts(new Date(ts)).forEach(x => { p[x.type] = x.value; });
+    return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - ts;
+  }
+  function wallToInstant(wall, t) {
+    if (t.utc) return wall;
+    if (!t.tz) return null; // floating time: show as written
+    try {
+      const o1 = tzOffset(wall, t.tz);
+      let ts = wall - o1;
+      const o2 = tzOffset(ts, t.tz);
+      if (o2 !== o1) ts = wall - o2;
+      return ts;
+    } catch (e) { return null; }
+  }
+  // Put a time (EXDATE / RECURRENCE-ID) on the same wall clock as the event's start.
+  function wallLike(t, st) {
+    if (st.allDay) return Date.UTC(t.y, t.mo - 1, t.d, st.h, st.mi, st.s);
+    if (t.utc && !st.utc && st.tz) { const inst = wallOf(t); try { return inst + tzOffset(inst, st.tz); } catch (e) { return inst; } }
+    return wallOf(t);
+  }
+  function icsDuration(v) {
+    const m = String(v || '').match(/^([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/);
+    if (!m) return 0;
+    const ms = ((+(m[2] || 0) * 7 + +(m[3] || 0)) * 24 * 3600 + +(m[4] || 0) * 3600 + +(m[5] || 0) * 60 + +(m[6] || 0)) * 1000;
+    return m[1] === '-' ? -ms : ms;
+  }
+
+  const WD = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+  function monthByDay(y, m, byday, dim) {
+    const out = [];
+    const firstDow = new Date(Date.UTC(y, m, 1)).getUTCDay();
+    byday.forEach(b => {
+      const first = 1 + ((b.d - firstDow + 7) % 7);
+      const all = [];
+      for (let d = first; d <= dim; d += 7) all.push(d);
+      if (!b.n) out.push(...all);
+      else { const d = b.n > 0 ? all[b.n - 1] : all[all.length + b.n]; if (d) out.push(d); }
+    });
+    return out;
+  }
+  // Returns the wall-clock start of every occurrence inside [winStart, winEnd].
+  function rruleWalls(startWall, rule, winStart, winEnd, exset) {
+    const r = {};
+    rule.split(';').forEach(kv => { const i = kv.indexOf('='); if (i > 0) r[kv.slice(0, i).toUpperCase()] = kv.slice(i + 1); });
+    const freq = r.FREQ;
+    const iv = Math.max(1, parseInt(r.INTERVAL || '1', 10) || 1);
+    const count = r.COUNT ? parseInt(r.COUNT, 10) : Infinity;
+    let until = Infinity;
+    if (r.UNTIL) { const t = icsTime({ v: r.UNTIL, p: {} }); if (t) until = t.allDay ? Date.UTC(t.y, t.mo - 1, t.d, 23, 59, 59) : wallOf(t); }
+    const tod = ((startWall % DAY_MS) + DAY_MS) % DAY_MS;
+    const sd = new Date(startWall);
+    const sy = sd.getUTCFullYear(), sm = sd.getUTCMonth(), sdate = sd.getUTCDate(), sdow = sd.getUTCDay();
+    const byday = r.BYDAY ? r.BYDAY.split(',').map(x => { const m = x.trim().match(/^([+-]?\d+)?([A-Z]{2})$/); return m && m[2] in WD ? { n: m[1] ? parseInt(m[1], 10) : 0, d: WD[m[2]] } : null; }).filter(Boolean) : null;
+    const bymd = r.BYMONTHDAY ? r.BYMONTHDAY.split(',').map(Number).filter(Boolean) : null;
+    const bymonth = r.BYMONTH ? r.BYMONTH.split(',').map(n => Number(n) - 1) : null;
+    const out = [];
+    let n = 0;
+    const jump = count === Infinity && winStart > startWall; // safe to skip ahead when occurrences aren't counted
+    const push = w => {
+      if (w < startWall) return true;
+      if (w > until || n >= count) return false;
+      n++;
+      if (w >= winStart && w <= winEnd && !exset.has(w)) out.push(w);
+      return w <= winEnd;
+    };
+    const dim = (y, m) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    const monthDays = (y, m, fallback) => {
+      const days = dim(y, m);
+      let list;
+      if (bymd) list = bymd.map(x => (x < 0 ? days + 1 + x : x)).filter(x => x >= 1 && x <= days);
+      else if (byday) list = monthByDay(y, m, byday, days);
+      else list = fallback <= days ? [fallback] : [];
+      return [...new Set(list)].sort((a, b) => a - b);
+    };
+    if (freq === 'DAILY') {
+      let k = jump ? Math.max(0, Math.floor((winStart - startWall) / DAY_MS / iv) - 1) : 0;
+      for (let g = 0; g < 6000; g++, k++) {
+        const w = startWall + k * iv * DAY_MS;
+        if (w > winEnd || w > until) break;
+        const dt = new Date(w);
+        if (bymonth && !bymonth.includes(dt.getUTCMonth())) continue;
+        if (byday && !byday.some(b => b.d === dt.getUTCDay())) continue;
+        if (!push(w)) break;
+      }
+    } else if (freq === 'WEEKLY') {
+      const wkst = WD[r.WKST] ?? 1;
+      const offs = [...new Set((byday && byday.length ? byday.map(b => b.d) : [sdow]).map(d => (d - wkst + 7) % 7))].sort((a, b) => a - b);
+      const weekStart = startWall - ((sdow - wkst + 7) % 7) * DAY_MS;
+      let k = jump ? Math.max(0, Math.floor((winStart - weekStart) / (7 * DAY_MS) / iv) - 1) : 0;
+      outer: for (let g = 0; g < 3000; g++, k++) {
+        const ws = weekStart + k * iv * 7 * DAY_MS;
+        if (ws > winEnd || ws > until) break;
+        for (const o of offs) if (!push(ws + o * DAY_MS)) break outer;
+      }
+    } else if (freq === 'MONTHLY') {
+      let k = 0;
+      if (jump) { const w = new Date(winStart); k = Math.max(0, Math.floor(((w.getUTCFullYear() - sy) * 12 + w.getUTCMonth() - sm) / iv) - 1); }
+      outer: for (let g = 0; g < 1200; g++, k++) {
+        const mi = sm + k * iv, y = sy + Math.floor(mi / 12), m = ((mi % 12) + 12) % 12;
+        if (Date.UTC(y, m, 1) > winEnd || Date.UTC(y, m, 1) > until) break;
+        for (const d of monthDays(y, m, sdate)) if (!push(Date.UTC(y, m, d) + tod)) break outer;
+      }
+    } else if (freq === 'YEARLY') {
+      let k = jump ? Math.max(0, Math.floor((new Date(winStart).getUTCFullYear() - sy) / iv) - 1) : 0;
+      outer: for (let g = 0; g < 300; g++, k++) {
+        const y = sy + k * iv;
+        if (Date.UTC(y, 0, 1) > winEnd || Date.UTC(y, 0, 1) > until) break;
+        const cands = [];
+        (bymonth || [sm]).forEach(m => {
+          const days = bymd || byday ? monthDays(y, m, sdate) : sdate <= dim(y, m) ? [sdate] : [];
+          days.forEach(d => cands.push(Date.UTC(y, m, d) + tod));
+        });
+        cands.sort((a, b) => a - b);
+        for (const w of cands) if (!push(w)) break outer;
+      }
+    }
+    return out;
+  }
+
+  function icsToEvents(text, feed) {
+    const raw = icsParse(text);
+    const t = today();
+    const winStart = Date.UTC(t.getFullYear(), t.getMonth(), t.getDate() - 62);
+    const winEnd = Date.UTC(t.getFullYear(), t.getMonth(), t.getDate() + 400);
+    const hm = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const out = [];
+    const overrides = new Map();
+    const masters = [];
+    raw.forEach(e => {
+      if (!e.DTSTART) return;
+      if (e['RECURRENCE-ID']) {
+        const key = (e.UID && e.UID.v) || '';
+        if (!overrides.has(key)) overrides.set(key, []);
+        overrides.get(key).push(e);
+      } else masters.push(e);
+    });
+    const cancelled = e => e.STATUS && /CANCELLED/i.test(e.STATUS.v);
+    const durationOf = (e, st) => {
+      if (e.DTEND) { const et = icsTime(e.DTEND); if (et) { const a = wallToInstant(wallOf(st), st), b = wallToInstant(wallOf(et), et); return a !== null && b !== null ? b - a : wallOf(et) - wallOf(st); } }
+      if (e.DURATION) return icsDuration(e.DURATION.v);
+      return st.allDay ? DAY_MS : 0;
+    };
+    let seq = 0;
+    const emit = (e, st, w, dur) => {
+      if (out.length >= 4000) return;
+      const uidPart = String((e.UID && e.UID.v) || `n${seq++}`).replace(/[^\w.@-]/g, '').slice(0, 60);
+      const base = {
+        id: `a_${feed.id}_${uidPart}_${w}`, source: 'apple', feed: feed.id, readOnly: true,
+        title: icsUnescape(e.SUMMARY && e.SUMMARY.v) || '(No title)',
+        location: icsUnescape(e.LOCATION && e.LOCATION.v).replace(/\s*\n\s*/g, ', ').slice(0, 200),
+        notes: icsUnescape(e.DESCRIPTION && e.DESCRIPTION.v).slice(0, 1000),
+        recur: 'none', recurDays: [], exdates: [], until: null, memberIds: [],
+      };
+      if (st.allDay) {
+        const s = new Date(w), endW = w + Math.max(dur, DAY_MS) - DAY_MS;
+        const date = `${s.getUTCFullYear()}-${pad(s.getUTCMonth() + 1)}-${pad(s.getUTCDate())}`;
+        const e2 = new Date(endW);
+        const endDate = `${e2.getUTCFullYear()}-${pad(e2.getUTCMonth() + 1)}-${pad(e2.getUTCDate())}`;
+        out.push({ ...base, allDay: true, date, endDate: endDate > date ? endDate : null, startTime: '', endTime: '' });
+        return;
+      }
+      const inst = wallToInstant(w, st);
+      const fw = new Date(w);
+      const s = inst === null ? new Date(fw.getUTCFullYear(), fw.getUTCMonth(), fw.getUTCDate(), fw.getUTCHours(), fw.getUTCMinutes()) : new Date(inst);
+      const e2 = new Date(s.getTime() + Math.max(dur, 0));
+      out.push({ ...base, allDay: false, date: ymd(s), endDate: null, startTime: hm(s), endTime: ymd(s) === ymd(e2) ? hm(e2) : '23:59' });
+    };
+    const emitStandalone = e => {
+      if (cancelled(e)) return;
+      const st = icsTime(e.DTSTART); if (!st) return;
+      const sw = wallOf(st), dur = durationOf(e, st);
+      if (sw + Math.max(dur, 0) >= winStart && sw <= winEnd) emit(e, st, sw, dur);
+    };
+    masters.forEach(e => {
+      if (cancelled(e)) return;
+      const st = icsTime(e.DTSTART); if (!st) return;
+      const sw = wallOf(st), dur = durationOf(e, st);
+      const key = (e.UID && e.UID.v) || '';
+      const ovList = overrides.get(key) || [];
+      overrides.delete(key);
+      if (!e.RRULE) { if (sw + Math.max(dur, 0) >= winStart && sw <= winEnd) emit(e, st, sw, dur); ovList.forEach(emitStandalone); return; }
+      const ex = new Set();
+      e.EXDATE.forEach(x => { const t2 = icsTime(x); if (t2) ex.add(wallLike(t2, st)); });
+      const ovMap = new Map();
+      ovList.forEach(o => { const rt = icsTime(o['RECURRENCE-ID']); if (rt) ovMap.set(wallLike(rt, st), o); });
+      ovMap.forEach((o, w) => ex.add(w)); // moved/changed occurrences replace the original
+      rruleWalls(sw, e.RRULE.v, winStart - Math.max(dur, 0), winEnd, ex).forEach(w => emit(e, st, w, dur));
+      ovMap.forEach(o => emitStandalone(o));
+    });
+    overrides.forEach(list => list.forEach(emitStandalone)); // overrides whose series wasn't in the feed
+    return out;
+  }
+
+  async function icalFetchOne(f, fresh) {
+    const r = await fetch(`/api/ical?feed=${encodeURIComponent(f.id)}${fresh ? '&fresh=1' : ''}`, { credentials: 'same-origin', cache: 'no-store' });
+    if (r.status === 401) { cloud.signedIn = false; showLock(); throw new Error('signed out'); }
+    if (!r.ok) { let msg = 'Could not load this calendar'; try { msg = (await r.json()).error || msg; } catch (e) { /* ignore */ } return { error: msg, status: r.status }; }
+    return { text: await r.text() };
+  }
+  async function icalRefresh({ fresh = false, only = null } = {}) {
+    if (!cloudOn() || ical.loading) return;
+    const feeds = icalFeeds().filter(f => !only || f.id === only);
+    ical.loading = true;
+    renderIcalStatus();
+    try {
+      for (const f of feeds) {
+        let res;
+        try {
+          res = await icalFetchOne(f, fresh);
+          if (res.status === 404 && only) { await new Promise(ok => setTimeout(ok, 1500)); res = await icalFetchOne(f, fresh); }
+        } catch (e) {
+          if (e.message === 'signed out') break;
+          ical.data[f.id] = { ...(ical.data[f.id] || { events: [] }), error: 'Offline — showing the last copy', at: Date.now() };
+          continue;
+        }
+        if (res.error) { ical.data[f.id] = { ...(ical.data[f.id] || { events: [] }), error: res.error, at: Date.now() }; continue; }
+        try {
+          const events = icsToEvents(res.text, f);
+          ical.data[f.id] = { events, error: null, at: Date.now() };
+        } catch (e) { ical.data[f.id] = { ...(ical.data[f.id] || { events: [] }), error: 'Could not read this calendar', at: Date.now() }; }
+      }
+      Object.keys(ical.data).forEach(id => { if (!icalFeed(id)) delete ical.data[id]; });
+      if (!only) ical.lastFetch = Date.now();
+      saveIcalCache();
+    } finally {
+      ical.loading = false;
+      icalRemap();
+      renderView();
+    }
+  }
+  function renderIcalStatus() { if (state.ui.view === 'settings') renderView(); }
+
+  function icalSection() {
+    const feeds = icalFeeds();
+    const memberOpts = sel => `<option value="">Everyone</option>${state.members.map(m => `<option value="${m.id}" ${sel === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}`;
+    const status = f => {
+      const d = ical.data[f.id];
+      if (ical.loading && (!d || !d.at)) return 'Loading…';
+      if (!d) return 'Not loaded yet';
+      if (d.error) return `<span class="warn-text">${esc(d.error)}</span>`;
+      return `${d.events.length} event${d.events.length === 1 ? '' : 's'} · updated ${timeAgo(d.at)}`;
+    };
+    return `<section class="card">
+      <div class="sec-head"><h3>Apple calendars</h3>${feeds.length ? '<button class="btn" data-action="ical-refresh">Refresh now</button>' : ''}</div>
+      <p class="muted">Show iCloud calendars on the board (read-only). Refreshes about every 15 minutes.</p>
+      ${feeds.length ? `<div class="gcal-list">${feeds.map(f => `
+        <div class="gcal-row">
+          <div class="gcal-on"><span class="gdot" style="--c:${f.color}"></span><span class="gname">${esc(f.name)}<small class="muted feed-status">${status(f)}</small></span></div>
+          <select data-ical-member="${f.id}">${memberOpts(f.memberId)}</select>
+          <button class="mini-btn" data-action="ical-remove" data-id="${f.id}" aria-label="Remove ${esc(f.name)}">${icon('trash')}</button>
+        </div>`).join('')}</div>` : ''}
+      <form class="ical-add" data-form="ical-add">
+        <label class="field"><span>Public Calendar link</span><input name="url" placeholder="webcal://p…-caldav.icloud.com/published/2/…" autocomplete="off" spellcheck="false" required></label>
+        <div class="row">
+          <label class="field"><span>Name</span><input name="name" placeholder="e.g. Mom’s iCloud" maxlength="40"></label>
+          <label class="field"><span>Whose calendar</span><select name="member">${memberOpts('')}</select></label>
+          <button class="btn primary" type="submit">Add</button>
+        </div>
+      </form>
+      <details class="howto"><summary>How do I get the link?</summary>
+        <ol><li>On the iPhone, open <b>Calendar</b> and tap <b>Calendars</b>.</li><li>Tap <b>ⓘ</b> next to the calendar and turn on <b>Public Calendar</b>.</li><li>Tap <b>Share Link…</b>, then <b>Copy</b>, and paste it above.</li></ol>
+        <p class="muted small">Anyone with the link can view that calendar, so only share calendars meant for the family board. Turning Public Calendar off stops the link.</p>
+      </details>
+    </section>`;
+  }
+
   // ---------------------------------------------------------------- toast
   let toastTimer;
   function toast(msg) {
@@ -1982,8 +2350,11 @@
   render();
   fetchWeather();
   setInterval(renderClock, 1000);
+  icalRemap();
   cloudInit();
   setInterval(cloudPull, 15000);
+  setInterval(() => icalRefresh(), 15 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - ical.lastFetch > 15 * 60 * 1000) icalRefresh(); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') cloudPull(); });
   addEventListener('online', () => { if (cloud.mode === 'server') { cloud.offline = false; cloudPull(); } });
   if (gCfg().connected) {
