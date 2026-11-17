@@ -1406,6 +1406,24 @@
     modalOpen = true;
     $$('[data-i]', modalRoot).forEach(b => b.addEventListener('click', () => { const i = Number(b.dataset.i); closeModal(); if (i >= 0) options[i].fn(); }));
   }
+  // Second confirmation for destructive actions: the button only works after typing DELETE.
+  function confirmTyped(title, what, fn) {
+    modal({
+      title,
+      body: `<p>This can’t be undone. Consider <b>Export backup</b> first.</p>
+        <label class="field"><span>Type <b>DELETE</b> to replace ${esc(what)}</span><input name="word" autocomplete="off" autocapitalize="characters" spellcheck="false" autofocus placeholder="DELETE"></label>`,
+      saveLabel: 'Yes, do it',
+      onOpen(form) {
+        const btn = $('button[type=submit]', form);
+        btn.classList.remove('primary'); btn.classList.add('danger'); btn.disabled = true;
+        form.elements.word.addEventListener('input', () => { btn.disabled = form.elements.word.value.trim().toUpperCase() !== 'DELETE'; });
+      },
+      onSave(form) {
+        if (form.elements.word.value.trim().toUpperCase() !== 'DELETE') return false;
+        closeModal(); fn(); return false;
+      },
+    });
+  }
   const fval = (form, name) => { const el = form.elements[name]; return el ? el.value.trim() : ''; };
   const fall = (form, name) => $$(`[name="${name}"]:checked`, form).map(i => i.value);
 
@@ -1907,8 +1925,18 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     },
     import() { $('#importInput').click(); },
-    'reset-demo'() { choice('Load the demo family?', 'This replaces everything currently saved (photos are kept).', [{ label: 'Load demo', cls: 'danger', fn: () => { const keep = state.settings.google, ge = state.gEvents; state = seed(defaults()); state.settings.google = keep; state.gEvents = ge; gRemap(); state.ui.view = 'calendar'; save(); render(); } }]); },
-    'clear-all'() { choice('Start fresh?', 'This deletes all family members, events, chores, lists and meals saved in this browser.', [{ label: 'Delete everything', cls: 'danger', fn: () => { const keep = state.settings.google, ge = state.gEvents; state = defaults(); state.settings.google = keep; state.gEvents = ge; Object.values(keep.calendars).forEach(c => { c.memberId = ''; }); gRemap(); save(); render(); memberModal(); } }]); },
+    'reset-demo'() {
+      const scope = cloud.mode === 'server' ? 'This replaces the family board on every signed-in device (photos are kept).' : 'This replaces everything saved in this browser (photos are kept).';
+      choice('Load the demo family?', scope, [{ label: 'Continue', cls: 'danger', fn: () => confirmTyped('Replace everything with the demo family?', 'demo family', () => {
+        const keep = state.settings.google, ge = state.gEvents; state = seed(defaults()); state.settings.google = keep; state.gEvents = ge; gRemap(); state.ui.view = 'calendar'; save(); render(); toast('Demo family loaded');
+      }) }]);
+    },
+    'clear-all'() {
+      const scope = cloud.mode === 'server' ? 'This deletes all family members, events, chores, lists, meals and recipes for everyone — on every signed-in device.' : 'This deletes all family members, events, chores, lists, meals and recipes saved in this browser.';
+      choice('Start fresh?', scope, [{ label: 'Continue', cls: 'danger', fn: () => confirmTyped('Delete everything?', 'everything', () => {
+        const keep = state.settings.google, ge = state.gEvents; state = defaults(); state.settings.google = keep; state.gEvents = ge; Object.values(keep.calendars).forEach(c => { c.memberId = ''; }); gRemap(); save(); render(); toast('Everything was deleted'); memberModal();
+      }) }]);
+    },
   };
   const currentList = () => state.lists.find(l => l.id === state.ui.listId);
 
