@@ -2600,11 +2600,12 @@
   async function anylistLoad() {
     if (cloud.mode !== 'server' || !cloudOn() || anylist.loading) return;
     anylist.loading = true;
-    try { const r = await api('/api/anylist'); if (r.ok) anylist.info = r.data; } catch (e) { /* offline */ }
+    try { const r = await api('/api/anylist'); if (r.ok) { anylist.info = r.data; anylist.loadedAt = Date.now(); } } catch (e) { /* offline */ }
     anylist.loading = false;
     if (state.ui.view === 'settings' && !modalOpen && !isTyping()) renderView();
   }
   function anylistSection() {
+    if (!anylist.loading && (!anylist.info || Date.now() - (anylist.loadedAt || 0) > 30000)) setTimeout(anylistLoad, 0);
     const cfg = state.settings.anylist || {};
     const info = anylist.info;
     const lists = state.lists || [];

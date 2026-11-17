@@ -312,12 +312,21 @@ async function alTokens(db, env) {
   if (!t.access) { await alLogin(env, t); await alSaveTokens(db, t); }
   return t;
 }
+// multipart/form-data with one binary field, shaped like the official clients send it (no filename)
+function alForm(name, bin) {
+  const boundary = `----CalendoraBoundary${alId()}`;
+  const head = te.encode(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+  const tail = te.encode(`\r\n--${boundary}--\r\n`);
+  const body = new Uint8Array(head.length + bin.length + tail.length);
+  body.set(head, 0); body.set(bin, head.length); body.set(tail, head.length + bin.length);
+  return { body, type: `multipart/form-data; boundary=${boundary}` };
+}
 async function alPost(db, env, t, path, makeBody) {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await fetch(`${AL_BASE}/${path}`, {
-      method: 'POST', body: makeBody ? makeBody() : undefined,
-      headers: { 'X-AnyLeaf-API-Version': '3', 'X-AnyLeaf-Client-Identifier': t.clientId, authorization: `Bearer ${t.access}` },
-    });
+    const b = makeBody ? makeBody() : null;
+    const headers = { 'X-AnyLeaf-API-Version': '3', 'X-AnyLeaf-Client-Identifier': t.clientId, authorization: `Bearer ${t.access}` };
+    if (b) headers['Content-Type'] = b.type;
+    const r = await fetch(`${AL_BASE}/${path}`, { method: 'POST', body: b ? b.body : undefined, headers });
     if (r.status === 401 && attempt === 0) { await alRefresh(env, t); await alSaveTokens(db, t); continue; }
     if (!r.ok) throw new ALError(`AnyList answered ${r.status}`);
     return new Uint8Array(await r.arrayBuffer());
@@ -427,8 +436,8 @@ async function anylistSyncOnce(db, env, board, version, cfg) {
     if (!res.meta || res.meta.changes !== 1) throw new ALError('board changed', 'retry');
   }
   if (ops.length) {
-    const bin = alEncodeOps(ops, t.userId);
-    await alPost(db, env, t, 'data/shopping-lists/update', () => { const f = new FormData(); f.append('operations', new Blob([bin], { type: 'application/octet-stream' })); return f; });
+    const bin = alEncodeOps(ops); // like the official clients, no user id
+    await alPost(db, env, t, 'data/shopping-lists/update', () => alForm('operations', bin));
   }
   const validA = new Set(al.items.map(a => a.id));
   await setConfig(db, 'anylist_map', JSON.stringify({ cl: cl.id, al: al.id, links, ignored: [...ignored].filter(id => validA.has(id)) }));
