@@ -16,6 +16,7 @@ A touch-friendly family wall calendar that runs in any web browser. Put it full-
 - **Rewards**: chores earn stars, and stars are redeemed for rewards the family sets up.
 - **Lists** for groceries, to-dos, packing and so on. Add several items at once by separating them with commas.
 - **Meal plan**: a week grid for breakfast, lunch, dinner and snacks. Dinner also shows on the week view. You can copy last week's meals, and a meal's ingredients can be sent to the grocery list.
+- **Recipes**: attach a recipe to any meal by pasting a link (ingredients and steps are pulled from the page, and the original link is kept), taking or uploading a photo (keep the photo, or have Cloudflare Workers AI transcribe it), or typing it in. The 📖 button opens a cooking view that keeps the screen awake and stays open on that device until someone closes it, with ingredients you can tick off, the current step highlighted, and a button to add the ingredients to Groceries.
 - **Photo frame**: when the calendar sits idle, it plays a slideshow of your photos with the time, the weather and today's events.
 - **Google Calendar two-way sync**: show your Google calendars, give each one to a family member, and save new events straight to Google.
 - **Apple (iCloud) calendars, read-only**: paste a calendar's Public Calendar link and choose whose it is. The Worker fetches the feed and the app expands repeating events, time zones, skipped dates and moved instances. It refreshes about every 15 minutes.
