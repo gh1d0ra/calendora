@@ -218,13 +218,228 @@ function parseJsonLoose(text) {
 }
 const asStrList = v => (Array.isArray(v) ? v : typeof v === 'string' ? v.split(/\n+/) : []).map(x => cleanText(typeof x === 'string' ? x : x && (x.text || x.name))).filter(Boolean).slice(0, 80);
 
+
+// ------------------------------------------------------------------ AnyList shopping-list sync (unofficial)
+// AnyList has no public API. This speaks the same private protocol its apps use — protocol details
+// learned from the MIT-licensed `anylist` library by codetheweb (https://github.com/codetheweb/anylist).
+// Credentials come from Worker secrets ANYLIST_EMAIL / ANYLIST_PASSWORD; tokens are kept in D1.
+const AL_BASE = 'https://www.anylist.com';
+const td8 = new TextDecoder();
+class ALError extends Error { constructor(msg, code) { super(msg); this.code = code; } }
+
+class PBReader {
+  constructor(buf) { this.b = buf; this.p = 0; }
+  eof() { return this.p >= this.b.length; }
+  varint() { let r = 0, mul = 1, x; do { x = this.b[this.p++]; r += (x & 0x7f) * mul; mul *= 128; } while (x & 0x80 && this.p < this.b.length); return r; }
+  bytes() { const n = this.varint(); const s = this.b.subarray(this.p, this.p + n); this.p += n; return s; }
+  skip(wt) {
+    if (wt === 0) this.varint();
+    else if (wt === 1) this.p += 8;
+    else if (wt === 2) { const n = this.varint(); this.p += n; }
+    else if (wt === 5) this.p += 4;
+    else throw new ALError('Unexpected data from AnyList');
+  }
+}
+function pbFields(buf, handlers) {
+  const r = new PBReader(buf);
+  while (!r.eof()) {
+    const t = r.varint(), f = Math.floor(t / 8), wt = t % 8;
+    const h = handlers[f];
+    if (h && wt === 2) h(r.bytes());
+    else if (h && wt === 0) h(r.varint());
+    else r.skip(wt);
+  }
+}
+function alDecodeItem(buf) {
+  const it = { id: '', name: '', checked: false, quantity: '' };
+  pbFields(buf, {
+    1: b => { it.id = td8.decode(b); }, 3: b => { it.listId = td8.decode(b); }, 4: b => { it.name = td8.decode(b); },
+    5: b => { it.details = td8.decode(b); }, 6: v => { it.checked = !!v; },
+    18: b => { if (!it.quantity) it.quantity = td8.decode(b); }, 21: b => pbFields(b, { 1: x => { it.quantity = td8.decode(x); } }),
+  });
+  return it;
+}
+function alDecodeLists(buf) { // PBUserDataResponse.shoppingListsResponse.newLists
+  const lists = [];
+  pbFields(buf, { 1: slr => pbFields(slr, { 1: sl => {
+    const l = { id: '', name: '', items: [] };
+    pbFields(sl, { 1: b => { l.id = td8.decode(b); }, 3: b => { l.name = td8.decode(b); }, 4: b => l.items.push(alDecodeItem(b)) });
+    lists.push(l);
+  } }) });
+  return lists;
+}
+class PBWriter {
+  constructor() { this.parts = []; this.len = 0; }
+  push(a) { this.parts.push(a); this.len += a.length; }
+  varint(n) { const o = []; while (n > 127) { o.push((n % 128) | 0x80); n = Math.floor(n / 128); } o.push(n); this.push(Uint8Array.from(o)); }
+  str(f, s) { if (s === undefined || s === null) return; const b = te.encode(String(s)); this.varint(f * 8 + 2); this.varint(b.length); this.push(b); }
+  bool(f, v) { this.varint(f * 8); this.varint(v ? 1 : 0); }
+  msg(f, w) { const b = w.finish(); this.varint(f * 8 + 2); this.varint(b.length); this.push(b); }
+  finish() { const out = new Uint8Array(this.len); let o = 0; for (const p of this.parts) { out.set(p, o); o += p.length; } return out; }
+}
+const alId = () => crypto.randomUUID().replace(/-/g, '');
+function alEncodeOps(ops, userId) { // PBListOperationList
+  const list = new PBWriter();
+  for (const op of ops) {
+    const meta = new PBWriter(); meta.str(1, alId()); meta.str(2, op.handler); if (userId) meta.str(3, userId);
+    const o = new PBWriter(); o.msg(1, meta); o.str(2, op.listId); o.str(3, op.itemId); if (op.value !== undefined) o.str(4, op.value);
+    if (op.item) { const it = new PBWriter(); it.str(1, op.item.id); it.str(3, op.item.listId); it.str(4, op.item.name); it.bool(6, !!op.item.checked); if (userId) it.str(12, userId); o.msg(6, it); }
+    list.msg(1, o);
+  }
+  return list.finish();
+}
+
+async function alSaveTokens(db, t) { await setConfig(db, 'anylist_tokens', JSON.stringify(t)); }
+async function alLogin(env, t) {
+  const f = new FormData(); f.append('email', env.ANYLIST_EMAIL); f.append('password', env.ANYLIST_PASSWORD);
+  const r = await fetch(`${AL_BASE}/auth/token`, { method: 'POST', body: f, headers: { 'X-AnyLeaf-API-Version': '3' } });
+  if (r.status === 400 || r.status === 401) throw new ALError('AnyList did not accept the email or password', 'auth');
+  if (!r.ok) throw new ALError(`AnyList sign-in failed (${r.status})`);
+  const j = await r.json();
+  t.access = j.access_token; t.refresh = j.refresh_token;
+  try { const p = JSON.parse(td8.decode(fromB64u(t.access.split('.')[1]))); t.userId = p.sub || p.user_id || p.uid || ''; } catch (e) { t.userId = t.userId || ''; }
+}
+async function alRefresh(env, t) {
+  const f = new FormData(); f.append('refresh_token', t.refresh || '');
+  const r = await fetch(`${AL_BASE}/auth/token/refresh`, { method: 'POST', body: f, headers: { 'X-AnyLeaf-API-Version': '3' } });
+  if (r.ok) { const j = await r.json(); t.access = j.access_token; t.refresh = j.refresh_token; } else await alLogin(env, t);
+}
+async function alTokens(db, env) {
+  let t = {};
+  try { t = JSON.parse((await getConfig(db, 'anylist_tokens')) || '{}') || {}; } catch (e) { t = {}; }
+  if (t.email !== env.ANYLIST_EMAIL) t = { email: env.ANYLIST_EMAIL }; // credentials changed
+  if (!t.clientId) t.clientId = alId();
+  if (!t.access) { await alLogin(env, t); await alSaveTokens(db, t); }
+  return t;
+}
+async function alPost(db, env, t, path, makeBody) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await fetch(`${AL_BASE}/${path}`, {
+      method: 'POST', body: makeBody ? makeBody() : undefined,
+      headers: { 'X-AnyLeaf-API-Version': '3', 'X-AnyLeaf-Client-Identifier': t.clientId, authorization: `Bearer ${t.access}` },
+    });
+    if (r.status === 401 && attempt === 0) { await alRefresh(env, t); await alSaveTokens(db, t); continue; }
+    if (!r.ok) throw new ALError(`AnyList answered ${r.status}`);
+    return new Uint8Array(await r.arrayBuffer());
+  }
+  throw new ALError('AnyList sign-in expired');
+}
+
+async function anylistSync(env, { force = false } = {}) {
+  const db = env.DB;
+  await ensureSchema(db);
+  if (!env.ANYLIST_EMAIL || !env.ANYLIST_PASSWORD) return { skipped: 'not-configured' };
+  const row = await db.prepare('SELECT data, version FROM board WHERE id = ?').bind(BOARD_ID).first();
+  if (!row) return { skipped: 'no-board' };
+  let board;
+  try { board = JSON.parse(row.data); } catch (e) { return { skipped: 'bad-board' }; }
+  const cfg = (board.settings && board.settings.anylist) || {};
+  if (!cfg.on) return { skipped: 'off' };
+  const now = Date.now();
+  if (now - Number((await getConfig(db, 'anylist_lock')) || 0) < 60000) return { skipped: 'busy' };
+  if (!force && now - Number((await getConfig(db, 'anylist_last')) || 0) < 8000) return { skipped: 'recent' };
+  await setConfig(db, 'anylist_lock', String(now));
+  let status;
+  try {
+    status = await anylistSyncOnce(db, env, board, row.version, cfg);
+  } catch (e) {
+    if (e.code === 'retry') status = null;
+    else status = { ok: false, error: e.message || 'AnyList sync failed', at: Date.now() };
+  } finally {
+    await setConfig(db, 'anylist_lock', '0');
+    await setConfig(db, 'anylist_last', String(Date.now()));
+  }
+  if (status) await setConfig(db, 'anylist_status', JSON.stringify(status));
+  return status || { skipped: 'retry' };
+}
+
+async function anylistSyncOnce(db, env, board, version, cfg) {
+  const lists = Array.isArray(board.lists) ? board.lists : [];
+  const cl = lists.find(l => l.id === cfg.listId) || lists.find(l => /grocer/i.test(l.name || ''));
+  if (!cl) throw new ALError('Pick which Calendora list to sync in Settings');
+  cl.items = Array.isArray(cl.items) ? cl.items : [];
+  const t = await alTokens(db, env);
+  const alists = alDecodeLists(await alPost(db, env, t, 'data/user-data/get'));
+  const wantName = String(cfg.listName || 'Groceries').trim().toLowerCase();
+  const al = alists.find(l => (l.name || '').trim().toLowerCase() === wantName);
+  if (!al) throw new ALError(`No AnyList list called “${cfg.listName || 'Groceries'}”. Your lists: ${alists.map(l => l.name).join(', ') || 'none'}`);
+
+  let map = null;
+  try { map = JSON.parse((await getConfig(db, 'anylist_map')) || 'null'); } catch (e) { map = null; }
+  if (!map || map.cl !== cl.id || map.al !== al.id) map = { cl: cl.id, al: al.id, links: [], ignored: [] };
+  const cById = new Map(cl.items.map(i => [i.id, i]));
+  const aById = new Map(al.items.map(i => [i.id, i]));
+  const ops = [], links = [], seenC = new Set(), seenA = new Set();
+  let changed = false, pulled = 0;
+
+  for (const L of map.links) {
+    const c = cById.get(L.c), a = aById.get(L.a);
+    if (c) seenC.add(c.id);
+    if (a) seenA.add(a.id);
+    if (!c && !a) continue;
+    if (!c) { ops.push({ handler: 'remove-shopping-list-item', listId: al.id, itemId: a.id, item: { id: a.id, listId: al.id, name: a.name, checked: a.checked } }); continue; }
+    if (!a) { cl.items = cl.items.filter(x => x.id !== c.id); changed = true; pulled++; continue; }
+    let name = L.name, checked = L.checked;
+    const cName = String(c.text || ''), cChk = !!c.done;
+    if (a.name !== L.name) { name = a.name; if (cName !== a.name) { c.text = a.name; changed = true; pulled++; } }
+    else if (cName !== L.name) { name = cName; ops.push({ handler: 'set-list-item-name', listId: al.id, itemId: a.id, value: cName }); }
+    if (a.checked !== L.checked) { checked = a.checked; if (cChk !== a.checked) { c.done = a.checked; changed = true; pulled++; } }
+    else if (cChk !== L.checked) { checked = cChk; ops.push({ handler: 'set-list-item-checked', listId: al.id, itemId: a.id, value: cChk ? 'y' : 'n' }); }
+    links.push({ c: c.id, a: a.id, name, checked });
+  }
+
+  // New on the Calendora side: match an unlinked AnyList item with the same name, or add it to AnyList.
+  const freeA = al.items.filter(a => !seenA.has(a.id));
+  const used = new Set();
+  for (const c of cl.items.filter(x => !seenC.has(x.id))) {
+    const key = String(c.text || '').trim().toLowerCase();
+    if (!key) continue;
+    const a = freeA.find(x => !used.has(x.id) && (x.name || '').trim().toLowerCase() === key);
+    if (a) {
+      used.add(a.id);
+      const checked = !!c.done && !!a.checked; // keep it on the list if either side still needs it
+      if (!!c.done !== checked) { c.done = checked; changed = true; }
+      if (a.checked !== checked) ops.push({ handler: 'set-list-item-checked', listId: al.id, itemId: a.id, value: checked ? 'y' : 'n' });
+      links.push({ c: c.id, a: a.id, name: a.name, checked });
+    } else {
+      const id = alId();
+      ops.push({ handler: 'add-shopping-list-item', listId: al.id, itemId: id, item: { id, listId: al.id, name: c.text, checked: !!c.done } });
+      links.push({ c: c.id, a: id, name: c.text, checked: !!c.done });
+    }
+  }
+  // New on the AnyList side: bring over items still to buy (crossed-off history stays in AnyList).
+  const ignored = new Set(map.ignored || []);
+  for (const a of freeA) {
+    if (used.has(a.id) || !a.name) continue;
+    if (a.checked) { ignored.add(a.id); continue; }
+    ignored.delete(a.id);
+    const id = `al${alId().slice(0, 12)}`;
+    cl.items.unshift({ id, text: a.name, done: false });
+    links.push({ c: id, a: a.id, name: a.name, checked: false });
+    changed = true; pulled++;
+  }
+
+  if (changed) {
+    const res = await db.prepare('UPDATE board SET data = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?')
+      .bind(JSON.stringify(board), Date.now(), BOARD_ID, version).run();
+    if (!res.meta || res.meta.changes !== 1) throw new ALError('board changed', 'retry');
+  }
+  if (ops.length) {
+    const bin = alEncodeOps(ops, t.userId);
+    await alPost(db, env, t, 'data/shopping-lists/update', () => { const f = new FormData(); f.append('operations', new Blob([bin], { type: 'application/octet-stream' })); return f; });
+  }
+  const validA = new Set(al.items.map(a => a.id));
+  await setConfig(db, 'anylist_map', JSON.stringify({ cl: cl.id, al: al.id, links, ignored: [...ignored].filter(id => validA.has(id)) }));
+  return { ok: true, at: Date.now(), listName: al.name, calendoraList: cl.name, pushed: ops.length, pulled, items: links.length };
+}
+
 // ------------------------------------------------------------------ API
 async function readJson(request) {
   if (!(request.headers.get('Content-Type') || '').includes('application/json')) return null;
   try { return await request.json(); } catch (e) { return null; }
 }
 
-async function handleApi(request, env, url) {
+async function handleApi(request, env, url, ctx) {
   const db = env.DB;
   if (!db) return json({ error: 'Database is not configured' }, 500);
   await ensureSchema(db);
@@ -300,10 +515,28 @@ async function handleApi(request, env, url) {
     } else {
       res = await db.prepare('UPDATE board SET data = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?').bind(data, now, BOARD_ID, body.baseVersion).run();
     }
-    if (res.meta && res.meta.changes === 1) return json({ ok: true, version: body.baseVersion + 1, updatedAt: now });
+    if (res.meta && res.meta.changes === 1) {
+      const al = body.data.settings && body.data.settings.anylist;
+      if (al && al.on && env.ANYLIST_EMAIL && ctx && ctx.waitUntil) ctx.waitUntil(anylistSync(env).catch(() => {}));
+      return json({ ok: true, version: body.baseVersion + 1, updatedAt: now });
+    }
     // someone else saved first: send back what is on the server
     const row = await db.prepare('SELECT data, version, updated_at FROM board WHERE id = ?').bind(BOARD_ID).first();
     return json({ error: 'conflict', version: row ? row.version : 0, updatedAt: row ? row.updated_at : 0, data: row ? JSON.parse(row.data) : null }, 409);
+  }
+
+  if (path === '/api/anylist' && method === 'GET') {
+    let status = null;
+    try { status = JSON.parse((await getConfig(db, 'anylist_status')) || 'null'); } catch (e) { status = null; }
+    return json({ configured: !!(env.ANYLIST_EMAIL && env.ANYLIST_PASSWORD), status });
+  }
+  if (path === '/api/anylist/sync' && method === 'POST') {
+    const r = await anylistSync(env, { force: true });
+    if (r && r.skipped === 'not-configured') return json({ error: 'Add the AnyList email and password on Cloudflare first' }, 400);
+    if (r && r.skipped === 'off') return json({ error: 'Turn on AnyList sync first' }, 400);
+    let status = null;
+    try { status = JSON.parse((await getConfig(db, 'anylist_status')) || 'null'); } catch (e) { status = null; }
+    return json({ result: r, status });
   }
 
   if (path === '/api/images' && method === 'POST') {
@@ -409,12 +642,15 @@ async function handleApi(request, env, url) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
-      try { return await handleApi(request, env, url); }
+      try { return await handleApi(request, env, url, ctx); }
       catch (e) { return json({ error: 'Server error' }, 500); }
     }
     return env.ASSETS.fetch(request);
+  },
+  async scheduled(event, env, ctx) {
+    if (env.DB && env.ANYLIST_EMAIL) ctx.waitUntil(anylistSync(env).catch(() => {}));
   },
 };

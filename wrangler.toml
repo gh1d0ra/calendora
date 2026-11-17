@@ -14,3 +14,7 @@ database_id = "f4154ecc-db4f-4706-9c8d-b5691d761d6a"
 
 [ai]
 binding = "AI"
+
+# AnyList shopping-list sync runs every minute (only when switched on and the secrets exist)
+[triggers]
+crons = ["* * * * *"]

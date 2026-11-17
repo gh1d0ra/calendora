@@ -1320,6 +1320,7 @@
           <button class="btn ghost" data-action="cloud-logout">Sign out this device</button>
         </div>
       </section>` : ''}
+      ${cloud.mode === 'server' ? anylistSection() : ''}
       ${cloud.mode === 'server' ? icalSection() : ''}
       ${googleSection()}
       <section class="card">
@@ -1778,7 +1779,7 @@
   function goToday() { ui.cursor = today(); ui.choreDate = today(); ui.mealWeek = today(); renderView(); }
 
   const actions = {
-    view(el) { state.ui.view = el.dataset.v; save(); render(); },
+    view(el) { state.ui.view = el.dataset.v; save({ localOnly: true }); render(); if (el.dataset.v === 'settings') anylistLoad(); },
     calview(el) { state.ui.calView = el.dataset.v; save(); renderView(); },
     nav(el) { navigate(Number(el.dataset.dir)); },
     today: goToday,
@@ -1790,6 +1791,17 @@
     },
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
+    async 'anylist-sync'() {
+      anylist.syncing = true; renderView();
+      try {
+        if (JSON.stringify(sharedPart()) !== cloud.lastStr) await cloudPush();
+        const r = await api('/api/anylist/sync', { method: 'POST', body: '{}' });
+        if (!r.ok) toast((r.data && r.data.error) || 'AnyList sync failed');
+        else { anylist.info = { ...(anylist.info || {}), status: r.data.status }; const st = r.data.status; toast(st && st.ok ? `Synced · ${st.pushed} sent, ${st.pulled} received` : (st && st.error) || 'Sync finished'); }
+        await cloudPull();
+      } catch (e) { toast('Can’t reach Calendora right now'); }
+      anylist.syncing = false; renderView();
+    },
     'meals-tab'(el) { state.ui.mealsTab = el.dataset.v; save({ localOnly: true }); renderView(); },
     'new-recipe'() { recipeAddChooser(null); },
     'open-recipe'(el) { openRecipe(el.dataset.id); },
@@ -1966,6 +1978,17 @@
       c.memberId = t.value; gRemap(); save(); toast(`${c.name} → ${t.value ? memberById(t.value).name : 'Everyone'}`); return;
     }
     if (t.matches('[data-g-default]')) { gCfg().defaultCal = t.value; save(); return; }
+    if (t.matches('[data-anylist]')) {
+      const cfg = state.settings.anylist = { listName: 'Groceries', ...(state.settings.anylist || {}) };
+      const k = t.dataset.anylist;
+      if (k === 'on') cfg.on = t.checked;
+      else if (k === 'listName') cfg.listName = t.value.trim() || 'Groceries';
+      else if (k === 'listId') cfg.listId = t.value;
+      if (k === 'listId' && !cfg.listId) delete cfg.listId;
+      save();
+      if (k === 'on' && cfg.on) { toast('AnyList sync on — first sync in a few seconds'); setTimeout(() => actions['anylist-sync'](), 1200); } else renderView();
+      return;
+    }
     if (t.matches('[data-ical-member]')) {
       const f = icalFeed(t.dataset.icalMember); if (!f) return;
       f.memberId = t.value; icalRemap(); save(); toast(`${f.name} → ${t.value ? memberById(t.value).name : 'Everyone'}`); return;
@@ -2129,6 +2152,7 @@
       const r = await api('/api/board', { method: 'PUT', body: JSON.stringify({ data: JSON.parse(str), baseVersion: cloud.version }) });
       if (r.ok) {
         cloud.version = r.data.version; cloud.lastStr = str; cloud.offline = false; cloud.lastSync = Date.now();
+        if (state.settings.anylist && state.settings.anylist.on) setTimeout(cloudPull, 3500); // pick up items AnyList sent back
       } else if (r.status === 409 && r.data) {
         // Another device saved first. Keep our edits to parts they didn't touch; take theirs elsewhere.
         const base = cloud.lastStr ? JSON.parse(cloud.lastStr) : {};
@@ -2568,6 +2592,50 @@
         <ol><li>On the iPhone, open <b>Calendar</b> and tap <b>Calendars</b>.</li><li>Tap <b>ⓘ</b> next to the calendar and turn on <b>Public Calendar</b>.</li><li>Tap <b>Share Link…</b>, then <b>Copy</b>, and paste it above.</li></ol>
         <p class="muted small">Anyone with the link can view that calendar, so only share calendars meant for the family board. Turning Public Calendar off stops the link.</p>
       </details>
+    </section>`;
+  }
+
+  // ---------------------------------------------------------------- AnyList shopping-list sync (settings)
+  const anylist = { info: null, loading: false, syncing: false };
+  async function anylistLoad() {
+    if (cloud.mode !== 'server' || !cloudOn() || anylist.loading) return;
+    anylist.loading = true;
+    try { const r = await api('/api/anylist'); if (r.ok) anylist.info = r.data; } catch (e) { /* offline */ }
+    anylist.loading = false;
+    if (state.ui.view === 'settings' && !modalOpen && !isTyping()) renderView();
+  }
+  function anylistSection() {
+    const cfg = state.settings.anylist || {};
+    const info = anylist.info;
+    const lists = state.lists || [];
+    const target = lists.find(l => l.id === cfg.listId) || lists.find(l => /grocer/i.test(l.name));
+    const st = info && info.status;
+    let statusLine = '';
+    if (!info) statusLine = '<span class="muted">Checking…</span>';
+    else if (!info.configured) statusLine = '<span class="warn-text">Waiting for your AnyList email and password on Cloudflare (steps below).</span>';
+    else if (!cfg.on) statusLine = '<span class="muted">Ready — switch it on to start syncing.</span>';
+    else if (anylist.syncing) statusLine = 'Syncing…';
+    else if (st && st.ok) statusLine = `Synced with AnyList “${esc(st.listName)}” · ${timeAgo(st.at)}`;
+    else if (st && st.error) statusLine = `<span class="warn-text">AnyList sync paused: ${esc(st.error)}</span>`;
+    else statusLine = '<span class="muted">Waiting for the first sync (within a minute)…</span>';
+    return `<section class="card">
+      <div class="sec-head"><h3>AnyList shopping list</h3>${info && info.configured && cfg.on ? '<button class="btn" data-action="anylist-sync">Sync now</button>' : ''}</div>
+      <p class="muted">Keeps one Calendora list and one AnyList list matched, both ways, about every minute. Uses AnyList’s unofficial connection, so it could stop working if AnyList changes its app.</p>
+      <p id="anylistStatus">${statusLine}</p>
+      <label class="switch"><input type="checkbox" data-anylist="on" ${cfg.on ? 'checked' : ''} ${info && info.configured ? '' : 'disabled'}><span class="track"></span><span>Sync with AnyList</span></label>
+      <div class="row">
+        <label class="field"><span>AnyList list name</span><input data-anylist="listName" value="${esc(cfg.listName || 'Groceries')}" maxlength="60" placeholder="Groceries"></label>
+        <label class="field"><span>Calendora list</span><select data-anylist="listId">${lists.map(l => `<option value="${l.id}" ${target && target.id === l.id ? 'selected' : ''}>${esc(l.emoji || '')} ${esc(l.name)}</option>`).join('')}</select></label>
+      </div>
+      ${info && info.configured ? '' : `<details class="howto" open><summary>Connect your AnyList account</summary>
+        <ol>
+          <li>In the Cloudflare dashboard open <b>Workers &amp; Pages → calendora → Settings → Variables and secrets</b>.</li>
+          <li>Click <b>Add</b>, choose type <b>Secret</b>, name it <code>ANYLIST_EMAIL</code> and enter your AnyList email. <b>Deploy</b>.</li>
+          <li>Add another <b>Secret</b> named <code>ANYLIST_PASSWORD</code> with your AnyList password. <b>Deploy</b>.</li>
+          <li>Come back here — the switch above becomes available.</li>
+        </ol>
+        <p class="muted small">The password is stored encrypted by Cloudflare and only the Calendora server can use it. Nobody can read it back, including Calendora’s settings page.</p>
+      </details>`}
     </section>`;
   }
 
