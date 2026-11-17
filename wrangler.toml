@@ -1,6 +1,8 @@
 name = "calendora"
 main = "src/worker.js"
 compatibility_date = "2025-06-01"
+# Keep variables and secrets added in the Cloudflare dashboard (e.g. ANYLIST_EMAIL) when deploying
+keep_vars = true
 
 [assets]
 directory = "./"
