@@ -27,6 +27,7 @@
   const ICONS = {
     calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>',
     chores: '<rect x="3" y="3" width="18" height="18" rx="5"/><path d="M8 12.5l2.8 2.8L16.5 9"/>',
+    health: '<path d="M12 20.5s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.5 2.7c0 5.6-7.5 10.2-7.5 10.2z"/><path d="M7.5 12.5h2.6l1.4-2.6 2 4.6 1.3-2h1.7"/>',
     baby: '<circle cx="12" cy="11" r="7.5"/><path d="M9.2 10.2h.01M14.8 10.2h.01M9.6 13.6c1.3 1.1 3.5 1.1 4.8 0M12 3.5c-1 0-1.6.8-1.2 1.6"/><path d="M8 20.5c1.2.6 2.5 1 4 1s2.8-.4 4-1"/>',
     rewards: '<path d="M12 3.2l2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.6l-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z"/>',
     lists: '<path d="M9.5 6.5H20M9.5 12H20M9.5 17.5H20"/><path d="M4 6.5l1 1 2-2M4 12l1 1 2-2M4 17.5l1 1 2-2"/>',
@@ -92,10 +93,10 @@
   function defaults() {
     return {
       version: 1,
-      members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [], babies: [], babyLog: [],
+      members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [], babies: [], babyLog: [], workouts: [], supplements: [], suppTaken: {}, illnesses: [], healthLog: [],
       hidden: [], gEvents: [], gSyncedAt: null,
       settings: {
-        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial',
+        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true,
         google: { clientId: '', connected: false, accounts: [], calendars: {}, defaultCal: '' },
       },
       ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan' },
@@ -970,6 +971,161 @@
     });
   }
 
+  // ---------------------------------------------------------------- health (workouts, vitamins, sick log)
+  // workouts: { id, memberId, date, time, type, minutes, notes }
+  // supplements: { id, memberId, name, dose, time, days: [0-6] (empty = every day), active }
+  // suppTaken: { 'suppId|YYYY-MM-DD': ms }
+  // illnesses: { id, memberId, name, start (ymd), end (ymd|null), notes }
+  // healthLog: { id, illnessId, memberId, type: 'med'|'temp'|'symptom', at (ms), name, dose, everyH, value, text }
+  const WORKOUTS = [['Strength', '🏋️'], ['Cardio', '❤️'], ['Run', '🏃'], ['Walk', '🚶'], ['Cycling', '🚴'], ['Swim', '🏊'], ['Yoga', '🧘'], ['HIIT', '🔥'], ['Sports', '⚽'], ['Class', '🤸'], ['Other', '💪']];
+  const workIcon = t => (WORKOUTS.find(w => w[0] === t) || ['', '💪'])[1];
+  const hUI = { day: today(), who: '' };
+  const hArr = k => state[k] || [];
+  const hWho = m => !hUI.who || m === hUI.who;
+  const tempU = () => (state.settings.tempUnit === 'celsius' ? 'C' : 'F');
+  const suppDue = (s, d) => s.active !== false && (!s.days || !s.days.length || s.days.includes(d.getDay()));
+  const hmNow = () => { const n = new Date(); return `${pad(n.getHours())}:${pad(n.getMinutes())}`; };
+  const DOW1 = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+  function renderHealth() {
+    const d = hUI.day, ds = ymd(d), isToday = ds === todayStr();
+    const ws = startOfWeek(d), we = addDays(ws, 6);
+    $('#toolbar').innerHTML = `
+      <div class="nav-group">
+        <button class="icon-btn" data-action="nav" data-dir="-1" aria-label="Previous day">${icon('left')}</button>
+        <button class="btn" data-action="today">Today</button>
+        <button class="icon-btn" data-action="nav" data-dir="1" aria-label="Next day">${icon('right')}</button>
+      </div>
+      <h1>Health <span class="muted">${isToday ? 'Today' : `${DOW[d.getDay()]} ${MON[d.getMonth()]} ${d.getDate()}`}</span></h1>
+      <span class="spacer"></span>
+      <div class="h-who"><button class="hchip ${!hUI.who ? 'on' : ''}" data-action="h-who" data-id="">Everyone</button>${state.members.map(m => `<button class="hchip ${hUI.who === m.id ? 'on' : ''}" data-action="h-who" data-id="${m.id}" style="--c:${m.color}">${avatar(m, 'xs')}${esc(m.name)}</button>`).join('')}</div>`;
+
+    // vitamins
+    const supps = hArr('supplements').filter(s => hWho(s.memberId) && suppDue(s, d)).sort((a, b) => (a.time || '99').localeCompare(b.time || '99'));
+    const taken = state.suppTaken || {};
+    const doneN = supps.filter(s => taken[`${s.id}|${ds}`]).length;
+    const vit = `<section class="card h-card"><div class="h-head"><h3>💊 Vitamins & daily meds</h3><span class="muted">${supps.length ? `${doneN}/${supps.length} taken` : ''}</span><span class="spacer"></span><button class="btn small" data-action="h-supp">${icon('plus')} Add</button></div>
+      ${supps.length ? supps.map(s => { const m = memberById(s.memberId), t = taken[`${s.id}|${ds}`]; const late = !t && isToday && s.time && s.time < hmNow();
+        return `<div class="h-supp ${t ? 'done' : ''} ${late ? 'late' : ''}">
+          <button class="h-check" data-action="h-take" data-id="${s.id}" aria-label="Mark taken">${t ? '✓' : ''}</button>
+          ${avatar(m, 'xs')}<div class="hs-main"><b>${esc(s.name)}</b><small class="muted">${esc([m ? m.name : '', s.dose, s.time ? fmtTime(s.time) : 'any time'].filter(Boolean).join(' · '))}</small></div>
+          <span class="hs-status">${t ? `Taken ${hmOf(t)}` : late ? 'Due' : ''}</span>
+          <button class="icon-btn flat" data-action="h-supp" data-id="${s.id}" aria-label="Edit">${icon('edit')}</button></div>`; }).join('')
+        : `<div class="empty-sm">Nothing scheduled${hUI.who ? ' for this person' : ''}. Add something like “Vitamin D · every day · 8:00am”.</div>`}
+      ${(() => { const off = hArr('supplements').filter(s => hWho(s.memberId) && !suppDue(s, d)); return off.length ? `<p class="muted small">Not due ${isToday ? 'today' : 'this day'}: ${off.map(s => `<a href="#" data-action="h-supp" data-id="${s.id}">${esc(s.name)}</a>`).join(', ')}</p>` : ''; })()}
+    </section>`;
+
+    // sick log
+    const ill = hArr('illnesses').filter(i => hWho(i.memberId));
+    const active = ill.filter(i => !i.end).sort((a, b) => b.start.localeCompare(a.start));
+    const past = ill.filter(i => i.end).sort((a, b) => b.start.localeCompare(a.start)).slice(0, 6);
+    const logOf = id => hArr('healthLog').filter(l => l.illnessId === id).sort((a, b) => b.at - a.at);
+    const illCard = i => {
+      const m = memberById(i.memberId), L = logOf(i.id);
+      const meds = {}; L.filter(l => l.type === 'med').forEach(l => { if (!meds[l.name]) meds[l.name] = l; });
+      const due = Object.values(meds).filter(l => l.everyH).map(l => { const next = l.at + l.everyH * HOUR; return `<span class="h-due ${next <= Date.now() ? 'ok' : ''}">${esc(l.name)}: ${next <= Date.now() ? 'next dose OK now' : `next dose ${hmOf(next)}`}</span>`; });
+      const lastTemp = L.find(l => l.type === 'temp');
+      const day = daysBetween(parse(i.start), today()) + 1;
+      return `<div class="h-ill" style="--c:${m ? m.color : '#999'}">
+        <div class="hi-head">${avatar(m, 'sm')}<div><b>${esc(i.name)}</b><small class="muted">${esc(m ? m.name : '')} · ${i.end ? `${MON[parse(i.start).getMonth()]} ${parse(i.start).getDate()} – ${MON[parse(i.end).getMonth()]} ${parse(i.end).getDate()}` : `day ${day}, since ${MON[parse(i.start).getMonth()]} ${parse(i.start).getDate()}`}${lastTemp ? ` · last temp ${esc(lastTemp.value)}°${tempU()}` : ''}</small></div>
+          <span class="spacer"></span><button class="icon-btn flat" data-action="h-ill" data-id="${i.id}" aria-label="Edit">${icon('edit')}</button></div>
+        ${due.length ? `<div class="h-dues">${due.join('')}</div>` : ''}
+        ${i.end ? '' : `<div class="hi-actions"><button class="btn small" data-action="h-log" data-ill="${i.id}" data-type="med">💊 Medicine</button><button class="btn small" data-action="h-log" data-ill="${i.id}" data-type="temp">🌡️ Temp</button><button class="btn small" data-action="h-log" data-ill="${i.id}" data-type="symptom">📝 Symptom</button><button class="btn small primary" data-action="h-recover" data-id="${i.id}">Recovered</button></div>`}
+        ${L.length ? `<div class="hi-log">${L.slice(0, i.end ? 4 : 12).map(l => `<div class="hl" data-action="h-log-edit" data-id="${l.id}"><span class="hl-t">${ymd(new Date(l.at)) === todayStr() ? '' : `${MON[new Date(l.at).getMonth()]} ${new Date(l.at).getDate()} `}${hmOf(l.at)}</span><span>${l.type === 'med' ? `💊 ${esc(l.name)}${l.dose ? ` · ${esc(l.dose)}` : ''}` : l.type === 'temp' ? `🌡️ ${esc(l.value)}°${tempU()}` : `📝 ${esc(l.text)}`}</span></div>`).join('')}${L.length > (i.end ? 4 : 12) ? `<div class="muted small">+${L.length - (i.end ? 4 : 12)} earlier</div>` : ''}</div>` : ''}
+      </div>`;
+    };
+    const sick = `<section class="card h-card"><div class="h-head"><h3>🤒 Sick log</h3><span class="spacer"></span><button class="btn small" data-action="h-ill">${icon('plus')} Someone’s sick</button></div>
+      ${active.length ? active.map(illCard).join('') : '<div class="empty-sm">Everyone’s well 🎉</div>'}
+      ${past.length ? `<details class="h-past"><summary>Past illnesses (${past.length})</summary>${past.map(illCard).join('')}</details>` : ''}
+    </section>`;
+
+    // workouts
+    const wk = hArr('workouts').filter(w => hWho(w.memberId) && w.date >= ymd(ws) && w.date <= ymd(we));
+    const dayW = wk.filter(w => w.date === ds).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+    const people = (hUI.who ? state.members.filter(m => m.id === hUI.who) : state.members);
+    const summary = people.map(m => { const mine = wk.filter(w => w.memberId === m.id); if (!mine.length && !hUI.who) return '';
+      const mins = mine.reduce((a, w) => a + (Number(w.minutes) || 0), 0);
+      return `<div class="h-wsum">${avatar(m, 'xs')}<b>${esc(m.name)}</b><span class="muted">${mine.length} workout${mine.length === 1 ? '' : 's'} · ${mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`}</span>
+        <span class="h-dots">${[0, 1, 2, 3, 4, 5, 6].map(i => { const dd = ymd(addDays(ws, i)); const has = mine.some(w => w.date === dd); return `<i class="${has ? 'on' : ''} ${dd === ds ? 'sel' : ''}" style="--c:${m.color}" title="${DOW[addDays(ws, i).getDay()]}">${DOW1[addDays(ws, i).getDay()]}</i>`; }).join('')}</span></div>`; }).join('');
+    const gym = `<section class="card h-card"><div class="h-head"><h3>🏋️ Workouts</h3><span class="muted">week of ${MON[ws.getMonth()]} ${ws.getDate()}</span><span class="spacer"></span><button class="btn small" data-action="h-workout">${icon('plus')} Log workout</button></div>
+      ${summary || '<div class="empty-sm">No workouts this week yet.</div>'}
+      <h4 class="h-sub">${isToday ? 'Today' : `${DOW[d.getDay()]} ${MON[d.getMonth()]} ${d.getDate()}`}</h4>
+      ${dayW.length ? dayW.map(w => { const m = memberById(w.memberId); return `<div class="h-work" data-action="h-workout" data-id="${w.id}"><span class="hw-ic">${workIcon(w.type)}</span>${avatar(m, 'xs')}<div class="hs-main"><b>${esc(w.type)}${w.minutes ? ` · ${w.minutes} min` : ''}</b><small class="muted">${esc([m ? m.name : '', w.time ? fmtTime(w.time) : '', w.notes].filter(Boolean).join(' · '))}</small></div></div>`; }).join('') : '<div class="empty-sm">Nothing logged.</div>'}
+    </section>`;
+
+    $('#view').innerHTML = `<div class="health">${active.length ? sick + vit : vit + sick}${gym}</div>`;
+  }
+
+  const memberOpts = cur => state.members.map(m => `<label><input type="radio" name="who" value="${m.id}" ${cur === m.id ? 'checked' : ''}><span>${esc(m.name)}</span></label>`).join('');
+  const defaultWho = () => hUI.who || (state.members[0] || {}).id || '';
+  function hSave(key, obj, isNew) { state[key] = isNew ? [...hArr(key), obj] : hArr(key).map(x => (x.id === obj.id ? obj : x)); save(); renderView(); }
+  function hDelete(key, id) { state[key] = hArr(key).filter(x => x.id !== id); save(); renderView(); }
+
+  function workoutModal(w) {
+    const isNew = !w; const x = w || { id: uid(), memberId: defaultWho(), date: ymd(hUI.day), time: hmNow(), type: 'Strength', minutes: 45, notes: '' };
+    modal({
+      title: isNew ? 'Log workout' : 'Edit workout',
+      body: `<div class="field"><span>Who</span><div class="seg wide">${memberOpts(x.memberId)}</div></div>
+        <div class="field"><span>Type</span><div class="seg wide w-types">${WORKOUTS.map(([t, ic]) => `<label><input type="radio" name="type" value="${t}" ${x.type === t ? 'checked' : ''}><span>${ic} ${t}</span></label>`).join('')}</div></div>
+        <div class="row"><label class="field"><span>Day</span><input type="date" name="date" value="${x.date}"></label><label class="field"><span>Time</span><input type="time" name="time" value="${x.time || ''}"></label><label class="field"><span>Minutes</span><input type="number" min="0" max="600" name="minutes" value="${esc(x.minutes || '')}"></label></div>
+        <label class="field"><span>Notes <small class="muted">(optional)</small></span><input name="notes" value="${esc(x.notes || '')}" placeholder="e.g. legs, 5k, gym at work"></label>`,
+      onSave(f) { const who = fall(f, 'who')[0]; if (!who) { toast('Pick who worked out'); return false; }
+        hSave('workouts', { ...x, memberId: who, type: fall(f, 'type')[0] || 'Other', date: fval(f, 'date') || ymd(hUI.day), time: fval(f, 'time'), minutes: Number(fval(f, 'minutes')) || 0, notes: fval(f, 'notes') }, isNew); },
+      onDelete: isNew ? null : () => hDelete('workouts', x.id),
+    });
+  }
+  function suppModal(s) {
+    const isNew = !s; const x = s || { id: uid(), memberId: defaultWho(), name: '', dose: '', time: '08:00', days: [], active: true };
+    const order = [...Array(7)].map((_, i) => (state.settings.weekStart + i) % 7);
+    modal({
+      title: isNew ? 'Add vitamin or daily medicine' : `Edit ${esc(x.name)}`,
+      body: `<div class="field"><span>For</span><div class="seg wide">${memberOpts(x.memberId)}</div></div>
+        <div class="row"><label class="field"><span>Name</span><input name="name" value="${esc(x.name)}" placeholder="e.g. Vitamin D" autofocus></label><label class="field"><span>Dose</span><input name="dose" value="${esc(x.dose || '')}" placeholder="e.g. 2000 IU"></label></div>
+        <label class="field"><span>Time of day <small class="muted">(optional)</small></span><input type="time" name="time" value="${x.time || ''}"></label>
+        <div class="field"><span>Days <small class="muted">(none picked = every day)</small></span><div class="seg wide">${order.map(i => `<label><input type="checkbox" name="days" value="${i}" ${x.days && x.days.includes(i) ? 'checked' : ''}><span>${DOW[i]}</span></label>`).join('')}</div></div>
+        <label class="switch"><input type="checkbox" name="active" ${x.active !== false ? 'checked' : ''}><span class="track"></span><span>Currently taking</span></label>`,
+      onSave(f) { const name = fval(f, 'name'); if (!name) { f.elements.name.classList.add('invalid'); return false; } const who = fall(f, 'who')[0]; if (!who) { toast('Pick who takes it'); return false; }
+        hSave('supplements', { ...x, memberId: who, name, dose: fval(f, 'dose'), time: fval(f, 'time'), days: fall(f, 'days').map(Number), active: f.elements.active.checked }, isNew); },
+      onDelete: isNew ? null : () => hDelete('supplements', x.id),
+    });
+  }
+  function illModal(i) {
+    const isNew = !i; const x = i || { id: uid(), memberId: defaultWho(), name: '', start: todayStr(), end: null, notes: '' };
+    modal({
+      title: isNew ? 'Someone’s sick' : 'Edit illness',
+      body: `<div class="field"><span>Who</span><div class="seg wide">${memberOpts(x.memberId)}</div></div>
+        <label class="field"><span>What is it</span><input name="name" value="${esc(x.name)}" placeholder="e.g. Cold, fever, stomach bug" autofocus></label>
+        <div class="row"><label class="field"><span>Started</span><input type="date" name="start" value="${x.start}"></label><label class="field"><span>Recovered <small class="muted">(blank = still sick)</small></span><input type="date" name="end" value="${x.end || ''}"></label></div>
+        <label class="field"><span>Notes</span><input name="notes" value="${esc(x.notes || '')}" placeholder="symptoms, doctor visit…"></label>`,
+      onSave(f) { const name = fval(f, 'name'); if (!name) { f.elements.name.classList.add('invalid'); return false; } const who = fall(f, 'who')[0]; if (!who) { toast('Pick who is sick'); return false; }
+        hSave('illnesses', { ...x, memberId: who, name, start: fval(f, 'start') || todayStr(), end: fval(f, 'end') || null, notes: fval(f, 'notes') }, isNew); },
+      onDelete: isNew ? null : () => { choice('Delete this illness?', 'Its medicine, temperature and symptom log is deleted too.', [{ label: 'Delete', cls: 'danger', fn: () => { state.healthLog = hArr('healthLog').filter(l => l.illnessId !== x.id); hDelete('illnesses', x.id); } }]); return false; },
+    });
+  }
+  function hLogModal(illnessId, type, l) {
+    const isNew = !l; const ill = hArr('illnesses').find(i => i.id === illnessId) || {};
+    const lastMed = hArr('healthLog').filter(e => e.illnessId === illnessId && e.type === 'med').sort((a, b) => b.at - a.at)[0];
+    const x = l || { id: uid(), illnessId, memberId: ill.memberId, type, at: Date.now(), ...(type === 'med' && lastMed ? { name: lastMed.name, dose: lastMed.dose, everyH: lastMed.everyH } : {}) };
+    const medNames = [...new Set(hArr('healthLog').filter(e => e.type === 'med').map(e => e.name))];
+    let body = `<label class="field"><span>When</span><input type="datetime-local" name="at" value="${toLocalInput(x.at)}"></label>`;
+    if (x.type === 'med') body += `<div class="row"><label class="field"><span>Medicine</span><input name="name" list="medNames" value="${esc(x.name || '')}" placeholder="e.g. Tylenol" autofocus><datalist id="medNames">${medNames.map(n => `<option value="${esc(n)}">`).join('')}</datalist></label><label class="field"><span>Dose</span><input name="dose" value="${esc(x.dose || '')}" placeholder="as directed"></label></div>
+        <label class="field"><span>Can repeat every (hours) <small class="muted">— optional, from the label or your doctor; shows when the next dose is OK</small></span><input type="number" step="0.5" min="0" max="48" name="everyH" value="${esc(x.everyH || '')}"></label>`;
+    else if (x.type === 'temp') body += `<label class="field"><span>Temperature (°${tempU()})</span><input type="number" step="0.1" name="value" value="${esc(x.value || '')}" autofocus></label>`;
+    else body += `<label class="field"><span>Symptom or note</span><input name="text" value="${esc(x.text || '')}" placeholder="e.g. cough worse at night" autofocus></label>`;
+    modal({
+      title: `${{ med: 'Medicine', temp: 'Temperature', symptom: 'Symptom' }[x.type]}${ill.name ? ` · ${esc(ill.name)}` : ''}`,
+      body,
+      onSave(f) {
+        const o = { ...x, at: fromLocalInput(fval(f, 'at')) };
+        if (x.type === 'med') { o.name = fval(f, 'name'); if (!o.name) { f.elements.name.classList.add('invalid'); return false; } o.dose = fval(f, 'dose'); o.everyH = Number(fval(f, 'everyH')) || 0; }
+        else if (x.type === 'temp') { o.value = fval(f, 'value'); if (!o.value) return false; }
+        else { o.text = fval(f, 'text'); if (!o.text) return false; }
+        hSave('healthLog', o, isNew);
+      },
+      onDelete: isNew ? null : () => hDelete('healthLog', x.id),
+    });
+  }
+
   // ---------------------------------------------------------------- render: shell
   const NAV = [
     ['calendar', 'Calendar'], ['chores', 'Chores'], ['rewards', 'Rewards'],
@@ -978,7 +1134,7 @@
   function renderSidebar() {
     $('#sidebar').innerHTML = `
       <div class="logo" title="Calendora"><span></span></div>
-      ${[...NAV, ...(state.settings.babyEnabled ? [['baby', 'Baby']] : [])].map(([v, label]) => `<button class="nav-btn ${state.ui.view === v ? 'active' : ''}" data-action="view" data-v="${v}">${icon(v)}<span>${label}</span></button>`).join('')}
+      ${[...NAV, ...(state.settings.healthEnabled ? [['health', 'Health']] : []), ...(state.settings.babyEnabled ? [['baby', 'Baby']] : [])].map(([v, label]) => `<button class="nav-btn ${state.ui.view === v ? 'active' : ''}" data-action="view" data-v="${v}">${icon(v)}<span>${label}</span></button>`).join('')}
       <div class="nav-spacer"></div>
       <button class="nav-btn" data-action="sleep" title="Start the photo frame now">${icon('sleep')}<span>Frame</span></button>
       <button class="nav-btn" data-action="fullscreen" title="Full screen">${icon('expand')}<span>Full</span></button>
@@ -1060,7 +1216,8 @@
   function renderView() {
     dayCache = new Map();
     if (state.ui.view === 'baby' && !state.settings.babyEnabled) state.ui.view = 'calendar';
-    const fn = { calendar: renderCalendar, chores: renderChores, rewards: renderRewards, lists: renderLists, meals: renderMeals, photos: renderPhotos, baby: renderBaby, settings: renderSettings }[state.ui.view] || renderCalendar;
+    if (state.ui.view === 'health' && !state.settings.healthEnabled) state.ui.view = 'calendar';
+    const fn = { calendar: renderCalendar, chores: renderChores, rewards: renderRewards, lists: renderLists, meals: renderMeals, photos: renderPhotos, baby: renderBaby, health: renderHealth, settings: renderSettings }[state.ui.view] || renderCalendar;
     $('#view').className = `view view-${state.ui.view}`;
     fn();
     $('#fab').hidden = state.ui.view === 'settings';
@@ -1798,6 +1955,11 @@
         </div>
       </section>
       <section class="card">
+        <h3>Health</h3>
+        <label class="switch"><input type="checkbox" data-setting-bool="healthEnabled" ${state.settings.healthEnabled ? 'checked' : ''}><span class="track"></span><span>Show the Health section in the menu</span></label>
+        <p class="muted small">Workouts, vitamins and daily meds, and a sick log with medicine times.</p>
+      </section>
+      <section class="card">
         <h3>Baby tracker</h3>
         <label class="switch"><input type="checkbox" data-setting-bool="babyEnabled" ${state.settings.babyEnabled ? 'checked' : ''}><span class="track"></span><span>Show the Baby section in the menu</span></label>
         ${state.settings.babyEnabled ? `<label class="field inline"><span>Units</span><select data-setting="babyUnits">${opt('imperial', 'oz · lb · in', s.babyUnits)}${opt('metric', 'ml · kg · cm', s.babyUnits)}</select></label>` : '<p class="muted small">Track feeds, sleep, diapers, pumping and growth. Off by default.</p>'}
@@ -2305,11 +2467,12 @@
       ui.cursor = { day: () => addDays(c, dir), week: () => addDays(c, 7 * dir), schedule: () => addDays(c, 7 * dir), month: () => new Date(c.getFullYear(), c.getMonth() + dir, 1) }[state.ui.calView]();
     } else if (v === 'chores') ui.choreDate = addDays(ui.choreDate, dir);
     else if (v === 'baby') bUI.day = addDays(bUI.day, dir);
+    else if (v === 'health') hUI.day = addDays(hUI.day, dir);
     else if (v === 'meals') ui.mealWeek = addDays(ui.mealWeek, 7 * dir);
     else return;
     renderView();
   }
-  function goToday() { ui.cursor = today(); ui.choreDate = today(); ui.mealWeek = today(); bUI.day = today(); renderView(); }
+  function goToday() { ui.cursor = today(); ui.choreDate = today(); ui.mealWeek = today(); bUI.day = today(); hUI.day = today(); renderView(); }
 
   const actions = {
     view(el) { state.ui.view = el.dataset.v; save({ localOnly: true }); render(); if (el.dataset.v === 'settings') anylistLoad(); },
@@ -2325,6 +2488,14 @@
     },
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
+    'h-who'(el) { hUI.who = el.dataset.id; renderView(); },
+    'h-workout'(el) { workoutModal(hArr('workouts').find(w => w.id === el.dataset.id)); },
+    'h-supp'(el, ev) { if (ev) ev.preventDefault(); suppModal(hArr('supplements').find(x => x.id === el.dataset.id)); },
+    'h-take'(el) { const k = `${el.dataset.id}|${ymd(hUI.day)}`; const t = { ...(state.suppTaken || {}) }; if (t[k]) delete t[k]; else { const n = new Date(), d = hUI.day; t[k] = new Date(d.getFullYear(), d.getMonth(), d.getDate(), n.getHours(), n.getMinutes()).getTime(); } state.suppTaken = t; save(); renderView(); },
+    'h-ill'(el) { illModal(hArr('illnesses').find(i => i.id === el.dataset.id)); },
+    'h-log'(el) { hLogModal(el.dataset.ill, el.dataset.type); },
+    'h-log-edit'(el) { const l = hArr('healthLog').find(x => x.id === el.dataset.id); if (l) hLogModal(l.illnessId, l.type, l); },
+    'h-recover'(el) { const i = hArr('illnesses').find(x => x.id === el.dataset.id); if (i) { hSave('illnesses', { ...i, end: todayStr() }, false); toast(`Glad ${memberById(i.memberId) ? memberById(i.memberId).name : 'they'}’s better!`); } },
     'pick-baby'(el) { bUI.babyId = el.dataset.id; state.ui.babyId = el.dataset.id; save({ localOnly: true }); renderView(); },
     'baby-edit'() { babyProfileModal(curBaby()); },
     'baby-log'(el) {
@@ -2600,6 +2771,7 @@
       case 'lists': return listModal();
       case 'meals': return state.ui.mealsTab === 'recipes' ? recipeAddChooser(null) : mealModal(todayStr(), 'dinner');
       case 'photos': return $('#photoInput').click();
+      case 'health': return choice('Add to Health', '', [{ label: '🏋️ Workout', fn: () => workoutModal() }, { label: '💊 Vitamin / daily med', fn: () => suppModal() }, { label: '🤒 Someone’s sick', fn: () => illModal() }]);
       case 'baby': return curBaby() ? babyEntryModal('diaper') : babyProfileModal(null);
       default: return null;
     }
@@ -2630,7 +2802,7 @@
   // When the app is served by the Calendora Worker, the family board is shared through /api.
   // Anywhere else (GitHub Pages, a local file) it runs in local-only mode.
   const CLOUD_KEY = 'calendora.cloud';
-  const SHARED_KEYS = ['members', 'events', 'chores', 'choreDone', 'lists', 'meals', 'rewards', 'redemptions', 'icalFeeds', 'recipes', 'babies', 'babyLog'];
+  const SHARED_KEYS = ['members', 'events', 'chores', 'choreDone', 'lists', 'meals', 'rewards', 'redemptions', 'icalFeeds', 'recipes', 'babies', 'babyLog', 'workouts', 'supplements', 'suppTaken', 'illnesses', 'healthLog'];
   const cloud = { mode: 'unknown', configured: false, signedIn: false, version: 0, lastStr: '', pushing: false, again: false, offline: false, lastSync: 0, timer: null };
   try { const m = JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null'); if (m) { cloud.version = m.version || 0; cloud.lastStr = m.lastStr || ''; cloud.lastSync = m.lastSync || 0; cloud.known = true; } } catch (e) { /* ignore */ }
   const saveCloudMeta = () => { try { localStorage.setItem(CLOUD_KEY, JSON.stringify({ version: cloud.version, lastStr: cloud.lastStr, lastSync: cloud.lastSync })); } catch (e) { /* ignore */ } };
