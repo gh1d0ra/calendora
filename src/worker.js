@@ -215,6 +215,36 @@ async function handleApi(request, env, url) {
     return json({ error: 'conflict', version: row ? row.version : 0, updatedAt: row ? row.updated_at : 0, data: row ? JSON.parse(row.data) : null }, 409);
   }
 
+  if (path === '/api/ical' && method === 'GET') {
+    // Fetch a calendar feed (e.g. an iCloud "Public Calendar" link) on the family's behalf.
+    // The link is looked up in the shared board, so only feeds the family added can be fetched.
+    const id = url.searchParams.get('feed') || '';
+    const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(BOARD_ID).first();
+    let feeds = [];
+    try { feeds = row ? (JSON.parse(row.data).icalFeeds || []) : []; } catch (e) { feeds = []; }
+    const feed = Array.isArray(feeds) ? feeds.find(f => f && f.id === id) : null;
+    if (!feed) return json({ error: 'Calendar not found' }, 404);
+    let target = String(feed.url || '').trim().replace(/^webcals?:\/\//i, 'https://');
+    let host = '';
+    try { host = new URL(target).hostname; } catch (e) { return json({ error: 'That calendar link is not valid' }, 400); }
+    if (!/^https?:\/\//i.test(target)) return json({ error: 'The link must start with webcal:// or https://' }, 400);
+    if (host !== 'localhost') target = target.replace(/^http:\/\//i, 'https://');
+    let r;
+    try {
+      r = await fetch(target, {
+        headers: { Accept: 'text/calendar, text/plain, */*', 'User-Agent': 'Calendora/1.0' },
+        redirect: 'follow',
+        ...(url.searchParams.get('fresh') ? {} : { cf: { cacheTtl: 600, cacheEverything: true } }),
+      });
+    } catch (e) { return json({ error: 'Could not reach that calendar' }, 502); }
+    if (r.status === 404 || r.status === 403) return json({ error: 'Calendar link not found — is Public Calendar still turned on?' }, 502);
+    if (!r.ok) return json({ error: `The calendar server answered ${r.status}` }, 502);
+    const text = await r.text();
+    if (text.length > 10000000) return json({ error: 'That calendar is too large' }, 502);
+    if (!text.includes('BEGIN:VCALENDAR')) return json({ error: 'That link is not a calendar feed' }, 502);
+    return new Response(text, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store' } });
+  }
+
   return json({ error: 'Not found' }, 404);
 }
 
