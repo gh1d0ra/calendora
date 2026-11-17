@@ -781,7 +781,10 @@
       <h1>${calTitle()}</h1>
       <div class="seg" role="tablist">
         ${[['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['schedule', 'Schedule']].map(([k, l]) => `<button class="${v === k ? 'on' : ''}" data-action="calview" data-v="${k}">${l}</button>`).join('')}
-      </div>`;
+      </div>
+      ${v === 'week' ? `<div class="seg small" title="How events are laid out in the week">
+        ${[['time', 'By time'], ['stack', 'Stacked']].map(([k, l]) => `<button class="${(state.ui.weekLayout || 'time') === k ? 'on' : ''}" data-action="week-layout" data-v="${k}">${l}</button>`).join('')}
+      </div>` : ''}`;
     ({ month: renderMonth, week: renderWeek, day: renderDay, schedule: renderSchedule })[v]();
   }
 
@@ -824,6 +827,7 @@
   }
 
   function renderWeek() {
+    if ((state.ui.weekLayout || 'time') === 'time') { renderWeekByTime(); return; }
     const ws = startOfWeek(ui.cursor), t = todayStr();
     let cols = '';
     for (let i = 0; i < 7; i++) {
@@ -919,6 +923,55 @@
     const focusMin = ds === todayStr() ? n.getHours() * 60 + n.getMinutes() - 90 : (firstTimed ? toMin(firstTimed.startTime) - 30 : 8 * 60);
     sc.scrollTop = Math.max(0, (focusMin - s * 60) / 60 * HOUR_H);
   }
+  // Week laid out on a time grid: one column per day, events placed by start time and length.
+  function renderWeekByTime() {
+    const ws = startOfWeek(ui.cursor), t = todayStr();
+    const days = [0, 1, 2, 3, 4, 5, 6].map(i => { const d = addDays(ws, i); return { d, ds: ymd(d), evs: eventsOn(ymd(d)) }; });
+    let s = state.settings.dayStart, en = state.settings.dayEnd;
+    days.forEach(({ evs }) => evs.forEach(e => { if (!e.allDay) { s = Math.min(s, Math.floor(toMin(e.startTime) / 60)); en = Math.max(en, Math.ceil(toMin(e.endTime || e.startTime) / 60)); } }));
+    en = Math.min(24, Math.max(en, s + 1));
+    const head = days.map(({ d, ds }) => {
+      const wx = dailyWeather(ds);
+      return `<div class="dname wk ${ds === t ? 'today' : ''}" data-action="goto-day" data-date="${ds}"><span class="wdow">${DOW[d.getDay()]}</span><span class="wnum">${d.getDate()}</span>${wx ? `<span class="wwx">${wx.icon} ${wx.hi}°</span>` : ''}</div>`;
+    }).join('');
+    const anyAllDay = days.some(({ evs }) => evs.some(e => e.allDay));
+    const allRow = anyAllDay ? `<div class="dallday" style="--cols:7"><div class="dlabel">All day</div>${days.map(({ ds, evs }) => `<div>${evs.filter(e => e.allDay).map(e => chip(e, ds)).join('')}</div>`).join('')}</div>` : '';
+    let times = '';
+    for (let h = s; h < en; h++) times += `<div class="dt">${h === s ? '' : fmtHourLabel(h)}</div>`;
+    const body = days.map(({ ds, evs }) => {
+      const items = layoutLanes(evs.filter(e => !e.allDay).map(e => {
+        const st = toMin(e.startTime); let et = toMin(e.endTime || e.startTime); if (et <= st) et = st + 30;
+        return { s: st, e: et, ev: e };
+      }));
+      return `<div class="dcol ${ds === t ? 'today' : ''}" data-action="new-event-at" data-date="${ds}" data-member="" ${ds === t ? `data-start="${s}"` : ''}>
+        ${items.map(it => {
+          const top = (it.s - s * 60) / 60 * HOUR_H;
+          const h = Math.max(24, (it.e - it.s) / 60 * HOUR_H - 2);
+          const w = 100 / it.lanes;
+          const ev = it.ev;
+          return `<div class="dev wk ${isPast(ev, ds) ? 'past' : ''} ${h < 40 ? 'short' : ''}" style="--c:${evColor(ev)};top:${top}px;height:${h}px;left:calc(${it.lane * w}% + 2px);width:calc(${w}% - 4px)" data-action="edit-event" data-id="${ev.id}" data-date="${ds}" title="${esc(ev.title)} · ${esc(timeRange(ev))}">
+            <div class="evtitle">${esc(ev.title)}</div>${h >= 40 ? `<div class="evmeta">${timeRange(ev)}</div>` : ''}
+          </div>`;
+        }).join('')}
+        ${ds === t ? '<div class="nowline in-col" id="nowline"></div>' : ''}
+      </div>`;
+    }).join('');
+    $('#view').innerHTML = `<div class="day week-time card" style="--hh:${HOUR_H}px">
+      <div class="dhead" style="--cols:7"><div></div>${head}</div>
+      ${allRow}
+      <div class="dscroll" id="dscroll">
+        <div class="dgrid" style="--cols:7;height:${(en - s) * HOUR_H}px" data-start="${s}">
+          <div class="dtimes">${times}</div>${body}
+        </div>
+      </div></div>`;
+    positionNowLine();
+    const n = new Date();
+    const inWeek = days.some(x => x.ds === t);
+    const firstTimed = days.flatMap(x => x.evs).filter(e => !e.allDay).map(e => toMin(e.startTime)).sort((a, b) => a - b)[0];
+    const focusMin = inWeek ? n.getHours() * 60 + n.getMinutes() - 120 : (firstTimed !== undefined ? firstTimed - 30 : 8 * 60);
+    $('#dscroll').scrollTop = Math.max(0, (focusMin - s * 60) / 60 * HOUR_H);
+  }
+
   function positionNowLine() {
     const nl = $('#nowline'); if (!nl) return;
     const s = Number(nl.parentElement.dataset.start);
@@ -1877,7 +1930,8 @@
 
   const actions = {
     view(el) { state.ui.view = el.dataset.v; save({ localOnly: true }); render(); if (el.dataset.v === 'settings') anylistLoad(); },
-    calview(el) { state.ui.calView = el.dataset.v; save(); renderView(); },
+    calview(el) { state.ui.calView = el.dataset.v; save({ localOnly: true }); renderView(); },
+    'week-layout'(el) { state.ui.weekLayout = el.dataset.v; save({ localOnly: true }); renderView(); },
     nav(el) { navigate(Number(el.dataset.dir)); },
     today: goToday,
     'goto-day'(el) { ui.cursor = parse(el.dataset.date); state.ui.calView = 'day'; save(); renderView(); },

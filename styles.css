@@ -554,3 +554,17 @@ form:not(.is-allday) .only-timed, form.is-allday .only-allday, form.is-repeat .o
 .g-account { border: 1.5px solid var(--line); border-radius: 16px; padding: 12px 14px 4px; margin: 12px 0; }
 .g-acct-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 .g-acct-head b { font-weight: 900; overflow-wrap: anywhere; }
+
+/* ------------------------------------------------ week by time */
+.seg.small button { padding: 7px 12px; font-size: 13.5px; }
+.week-time .dname.wk { flex-direction: row; align-items: baseline; gap: 7px; cursor: pointer; padding: 10px 10px 8px; }
+.week-time .dname.wk span { overflow: visible; white-space: nowrap; }
+.week-time .dname.wk.today .wnum, .week-time .dname.wk.today .wdow { color: var(--accent); }
+.week-time .dname.wk .wwx { margin-left: auto; }
+.week-time .dcol.today { background-color: color-mix(in srgb, var(--accent) 4%, white); }
+.dev.wk { padding: 4px 6px; border-left-width: 4px; }
+.dev.wk .evtitle { font-size: 12.5px; line-height: 1.2; }
+.dev.wk .evmeta { font-size: 11px; }
+.dev.wk.short .evtitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nowline.in-col { left: 0; }
+@media (max-width: 1100px) { .week-time .dhead, .week-time .dallday, .week-time .dgrid { min-width: 900px; } .week-time { overflow-x: auto; } }
