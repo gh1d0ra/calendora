@@ -122,12 +122,13 @@
   }
 
   let saveTimer;
-  function save() {
+  function save(opts = {}) {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
       catch (e) { toast('Could not save — browser storage is full'); }
     }, 120);
+    if (!opts.localOnly) cloudQueuePush();
   }
 
   function seed(s) {
@@ -1053,6 +1054,16 @@
         <label class="field inline"><span>Show dinner on the week view</span><select data-setting="showMeals" data-bool="1">${opt('true', 'Yes', s.showMeals)}${opt('false', 'No', s.showMeals)}</select></label>
         <label class="field inline"><span>Photo frame starts after</span><select data-setting="screensaverMin" data-num="1">${[[0, 'Never'], [1, '1 minute'], [5, '5 minutes'], [10, '10 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour']].map(([v, l]) => opt(v, l, s.screensaverMin)).join('')}</select></label>
       </section>
+      ${cloud.mode === 'server' ? `<section class="card">
+        <h3>Family sharing</h3>
+        <p class="muted" id="cloudStatus">${cloudStatusText()}</p>
+        <div class="row wrap">
+          <button class="btn" data-action="cloud-sync">Sync now</button>
+          <button class="btn" data-action="cloud-passcode">Change passcode</button>
+          <button class="btn" data-action="cloud-logout-all">Sign out other devices</button>
+          <button class="btn ghost" data-action="cloud-logout">Sign out this device</button>
+        </div>
+      </section>` : ''}
       ${googleSection()}
       <section class="card">
         <h3>Weather</h3>
@@ -1484,6 +1495,24 @@
     },
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
+    'cloud-sync'() { if (JSON.stringify(sharedPart()) !== cloud.lastStr) cloudPush(); else cloudPull(); toast('Syncing…'); },
+    'cloud-passcode'() { passcodeModal(); },
+    'cloud-logout-all'() {
+      choice('Sign out other devices?', 'Every other phone, tablet and computer will need the family passcode again. This device stays signed in.', [{
+        label: 'Sign them out', cls: 'danger',
+        fn: () => api('/api/logout-all', { method: 'POST', body: '{}' }).then(r => toast(r.ok ? 'Other devices signed out' : 'Could not sign out other devices')).catch(() => toast('Can’t reach Calendora right now')),
+      }]);
+    },
+    'cloud-logout'() {
+      choice('Sign out this device?', 'The family board is removed from this device. It stays safe on the server for everyone else.', [{
+        label: 'Sign out', cls: 'danger',
+        fn: async () => {
+          try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch (e) { /* ignore */ }
+          localStorage.removeItem(STORE_KEY); localStorage.removeItem(CLOUD_KEY);
+          location.reload();
+        },
+      }]);
+    },
     'g-connect'() { gConnect(); },
     'g-reconnect'() { gReconnect(); },
     'g-sync'() { if (!gHasToken()) gReconnect(); else gSync(); },
@@ -1570,6 +1599,7 @@
   document.addEventListener('submit', async evt => {
     const f = evt.target.closest('[data-form]'); if (!f) return;
     evt.preventDefault();
+    if (f.dataset.form === 'setup' || f.dataset.form === 'login') { lockSubmit(f); return; }
     if (f.dataset.form === 'add-item') {
       const text = f.elements.text.value.trim(); const l = currentList();
       if (!text || !l) return;
@@ -1663,13 +1693,219 @@
   document.addEventListener('keydown', e => {
     if (ssOn) { stopScreensaver(); return; }
     if (e.key === 'Escape' && modalOpen) { closeModal(); return; }
-    if (modalOpen || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+    if (modalOpen || !$('#lock').hidden || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
     if (e.key === 'ArrowLeft') navigate(-1);
     else if (e.key === 'ArrowRight') navigate(1);
     else if (e.key === 't') goToday();
     else if (state.ui.view === 'calendar' && 'dwms'.includes(e.key)) { state.ui.calView = { d: 'day', w: 'week', m: 'month', s: 'schedule' }[e.key]; save(); renderView(); }
     else if (e.key === 'n') $('#fab').click();
   });
+
+  // ---------------------------------------------------------------- family sharing (Cloudflare Worker + D1)
+  // When the app is served by the Calendora Worker, the family board is shared through /api.
+  // Anywhere else (GitHub Pages, a local file) it runs in local-only mode.
+  const CLOUD_KEY = 'calendora.cloud';
+  const SHARED_KEYS = ['members', 'events', 'chores', 'choreDone', 'lists', 'meals', 'rewards', 'redemptions'];
+  const cloud = { mode: 'unknown', configured: false, signedIn: false, version: 0, lastStr: '', pushing: false, again: false, offline: false, lastSync: 0, timer: null };
+  try { const m = JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null'); if (m) { cloud.version = m.version || 0; cloud.lastStr = m.lastStr || ''; cloud.lastSync = m.lastSync || 0; cloud.known = true; } } catch (e) { /* ignore */ }
+  const saveCloudMeta = () => { try { localStorage.setItem(CLOUD_KEY, JSON.stringify({ version: cloud.version, lastStr: cloud.lastStr, lastSync: cloud.lastSync })); } catch (e) { /* ignore */ } };
+  const cloudOn = () => cloud.mode === 'server' && cloud.signedIn;
+
+  function sharedPart() {
+    const out = {};
+    SHARED_KEYS.forEach(k => { out[k] = state[k]; });
+    const { google, ...rest } = state.settings; // Google sign-in stays on each device
+    out.settings = rest;
+    return out;
+  }
+  function applyShared(data) {
+    SHARED_KEYS.forEach(k => { if (data[k] !== undefined) state[k] = data[k]; });
+    if (data.settings) state.settings = { ...state.settings, ...data.settings, google: state.settings.google };
+    state.hidden = state.hidden.filter(id => state.members.some(m => m.id === id));
+    gRemap();
+    save({ localOnly: true });
+    render();
+  }
+  async function api(path, opts = {}) {
+    const headers = opts.body ? { 'Content-Type': 'application/json' } : {};
+    const r = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...opts, headers });
+    let data = null;
+    try { data = await r.json(); } catch (e) { /* not JSON */ }
+    return { status: r.status, ok: r.ok, data };
+  }
+  const isTyping = () => /INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || '');
+
+  async function cloudInit() {
+    if (location.protocol === 'file:' || /\.github\.io$/.test(location.hostname)) { cloud.mode = 'local'; return; }
+    let r;
+    try { r = await api('/api/session'); }
+    catch (e) {
+      if (cloud.known) { cloud.mode = 'server'; cloud.signedIn = true; cloud.offline = true; renderCloudStatus(); } // offline: keep using this device's copy
+      else cloud.mode = 'local';
+      return;
+    }
+    if (!r.data || typeof r.data.configured !== 'boolean') { cloud.mode = 'local'; return; }
+    cloud.mode = 'server';
+    cloud.configured = r.data.configured;
+    cloud.signedIn = r.data.signedIn;
+    if (!cloud.signedIn) { showLock(); return; }
+    await cloudAfterSignIn();
+  }
+
+  async function cloudAfterSignIn() {
+    hideLock();
+    let r;
+    try { r = await api('/api/board'); } catch (e) { cloud.offline = true; renderCloudStatus(); return; }
+    if (r.status === 401) { cloud.signedIn = false; showLock(); return; }
+    if (!r.ok) { toast('Could not load the family board'); return; }
+    cloud.offline = false;
+    if (!r.data.data) {
+      cloud.version = 0; cloud.lastStr = '';
+      await cloudPush(true);
+      toast('Family board created — every signed-in device will now share it');
+    } else {
+      cloud.version = r.data.version;
+      applyShared(r.data.data);
+      cloud.lastStr = JSON.stringify(sharedPart());
+    }
+    cloud.lastSync = Date.now();
+    saveCloudMeta();
+    renderCloudStatus();
+  }
+
+  function cloudQueuePush() {
+    if (!cloudOn()) return;
+    clearTimeout(cloud.timer);
+    cloud.timer = setTimeout(() => cloudPush(), 600);
+  }
+
+  async function cloudPush(force = false) {
+    if (!cloudOn()) return;
+    if (cloud.pushing) { cloud.again = true; return; }
+    const str = JSON.stringify(sharedPart());
+    if (!force && str === cloud.lastStr) return;
+    cloud.pushing = true;
+    try {
+      const r = await api('/api/board', { method: 'PUT', body: JSON.stringify({ data: JSON.parse(str), baseVersion: cloud.version }) });
+      if (r.ok) {
+        cloud.version = r.data.version; cloud.lastStr = str; cloud.offline = false; cloud.lastSync = Date.now();
+      } else if (r.status === 409 && r.data) {
+        // Another device saved first. Keep our edits to parts they didn't touch; take theirs elsewhere.
+        const base = cloud.lastStr ? JSON.parse(cloud.lastStr) : {};
+        const local = JSON.parse(str), remote = r.data.data || {};
+        const merged = {}; let keptLocal = false;
+        [...SHARED_KEYS, 'settings'].forEach(k => {
+          const lc = JSON.stringify(local[k]), bc = JSON.stringify(base[k]), rc = JSON.stringify(remote[k]);
+          if (lc !== bc && rc === bc) { merged[k] = local[k]; keptLocal = true; } else merged[k] = remote[k];
+        });
+        cloud.version = r.data.version;
+        applyShared(merged);
+        cloud.lastStr = JSON.stringify(remote);
+        if (keptLocal) cloud.again = true;
+        cloud.offline = false; cloud.lastSync = Date.now();
+      } else if (r.status === 401) {
+        cloud.signedIn = false; showLock();
+      } else if (r.data && r.data.error) {
+        toast(r.data.error);
+      }
+    } catch (e) {
+      cloud.offline = true; // keep the change locally; it goes up on the next attempt
+    } finally {
+      cloud.pushing = false;
+      saveCloudMeta();
+      renderCloudStatus();
+      if (cloud.again) { cloud.again = false; cloudQueuePush(); }
+    }
+  }
+
+  async function cloudPull() {
+    if (!cloudOn() || cloud.pushing) return;
+    if (JSON.stringify(sharedPart()) !== cloud.lastStr) { cloudPush(); return; }
+    if (modalOpen || isTyping()) return; // don't redraw under someone's fingers
+    try {
+      const r = await api(`/api/board?since=${cloud.version}`);
+      if (r.status === 401) { cloud.signedIn = false; showLock(); return; }
+      if (r.ok) {
+        cloud.offline = false; cloud.lastSync = Date.now();
+        if (!r.data.unchanged && r.data.data) {
+          cloud.version = r.data.version;
+          applyShared(r.data.data);
+          cloud.lastStr = JSON.stringify(sharedPart());
+        }
+      }
+    } catch (e) { cloud.offline = true; }
+    saveCloudMeta();
+    renderCloudStatus();
+  }
+
+  function renderCloudStatus() {
+    const pill = $('#cloudPill');
+    if (pill) {
+      pill.hidden = !(cloud.mode === 'server' && cloud.offline);
+      pill.textContent = 'Offline · changes saved on this device';
+    }
+    const st = $('#cloudStatus');
+    if (st) st.innerHTML = cloudStatusText();
+  }
+  function cloudStatusText() {
+    if (cloud.offline) return 'Offline right now — changes are kept on this device and sync when the connection is back.';
+    return cloud.lastSync ? `Shared with every signed-in device · synced ${timeAgo(cloud.lastSync)}.` : 'Shared with every signed-in device.';
+  }
+
+  // ---- lock screen
+  function showLock(error = '') {
+    const el = $('#lock');
+    const setup = !cloud.configured;
+    el.hidden = false;
+    el.innerHTML = `<form class="lock-card" data-form="${setup ? 'setup' : 'login'}">
+      <div class="logo big"><span></span></div>
+      <h1>${setup ? 'Welcome to Calendora' : 'Calendora'}</h1>
+      <p class="muted">${setup ? 'Create a family passcode. Everyone in the family uses it once on each of their devices.' : 'Enter the family passcode to open the family board on this device.'}</p>
+      <input type="password" name="pass" placeholder="${setup ? 'New family passcode' : 'Family passcode'}" autocomplete="${setup ? 'new-password' : 'current-password'}" minlength="4" required autofocus />
+      ${setup ? '<input type="password" name="pass2" placeholder="Type it again" autocomplete="new-password" minlength="4" required />' : ''}
+      <div class="lock-error" role="alert">${esc(error)}</div>
+      <button class="btn primary block" type="submit">${setup ? 'Create passcode' : 'Open Calendora'}</button>
+      ${setup ? '<p class="muted small">At least 4 characters. You can change it later in Settings.</p>' : ''}
+    </form>`;
+    setTimeout(() => { const i = $('#lock input'); if (i) i.focus(); }, 50);
+  }
+  function hideLock() { const el = $('#lock'); el.hidden = true; el.innerHTML = ''; }
+
+  async function lockSubmit(form) {
+    const pass = form.elements.pass.value;
+    const btn = $('button[type=submit]', form);
+    const fail = msg => { $('.lock-error', form).textContent = msg; btn.disabled = false; };
+    if (pass.length < 4) return fail('Use at least 4 characters');
+    if (form.dataset.form === 'setup' && pass !== form.elements.pass2.value) return fail('The two passcodes don’t match');
+    btn.disabled = true;
+    try {
+      const r = await api(form.dataset.form === 'setup' ? '/api/setup' : '/api/login', { method: 'POST', body: JSON.stringify({ passcode: pass }) });
+      if (r.status === 409 && form.dataset.form === 'setup') { cloud.configured = true; showLock('A passcode was already created — enter it here'); return; }
+      if (!r.ok) return fail((r.data && r.data.error) || 'Something went wrong — try again');
+      cloud.configured = true; cloud.signedIn = true;
+      await cloudAfterSignIn();
+    } catch (e) { fail('Can’t reach Calendora — check the internet connection'); }
+  }
+
+  function passcodeModal() {
+    modal({
+      title: 'Change family passcode',
+      body: `<label class="field"><span>Current passcode</span><input type="password" name="cur" autocomplete="current-password" autofocus></label>
+        <label class="field"><span>New passcode</span><input type="password" name="next" autocomplete="new-password" minlength="4"></label>
+        <label class="field"><span>New passcode again</span><input type="password" name="next2" autocomplete="new-password"></label>
+        <p class="muted small">Every other device will need the new passcode. This one stays signed in.</p>`,
+      onSave(form) {
+        const next = form.elements.next.value;
+        if (next.length < 4) { toast('Use at least 4 characters'); return false; }
+        if (next !== form.elements.next2.value) { toast('The new passcodes don’t match'); return false; }
+        api('/api/passcode', { method: 'POST', body: JSON.stringify({ current: form.elements.cur.value, next }) })
+          .then(r => { if (r.ok) { closeModal(); toast('Passcode changed'); } else toast((r.data && r.data.error) || 'Could not change the passcode'); })
+          .catch(() => toast('Can’t reach Calendora right now'));
+        return false;
+      },
+      saveLabel: 'Change passcode',
+    });
+  }
 
   // ---------------------------------------------------------------- toast
   let toastTimer;
@@ -1737,7 +1973,7 @@
     positionNowLine();
     if (ssOn) updateScreensaver();
     const m = state.settings.screensaverMin;
-    if (!ssOn && !modalOpen && m > 0 && Date.now() - lastActive > m * 60000) startScreensaver();
+    if (!ssOn && !modalOpen && $('#lock').hidden && m > 0 && Date.now() - lastActive > m * 60000) startScreensaver();
     if (todayStr() !== lastDay) { lastDay = todayStr(); goToday(); }
   }, 1000 * 15);
   setInterval(fetchWeather, 30 * 60 * 1000);
@@ -1746,6 +1982,10 @@
   render();
   fetchWeather();
   setInterval(renderClock, 1000);
+  cloudInit();
+  setInterval(cloudPull, 15000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') cloudPull(); });
+  addEventListener('online', () => { if (cloud.mode === 'server') { cloud.offline = false; cloudPull(); } });
   if (gCfg().connected) {
     gLoadScript().catch(() => {});
     gSync({ quiet: true });
