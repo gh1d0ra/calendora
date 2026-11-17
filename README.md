@@ -21,9 +21,16 @@ A touch-friendly family wall calendar that runs in any web browser. Put it full-
 - **Weather**: free forecast from Open-Meteo, shown in the header and on each day in the week view.
 - Full-screen mode, a 12- or 24-hour clock, a choice of first day of the week, and backup export and import.
 
-## Privacy
+## Where data lives
 
-Calendora has no account and no server. Everything is stored in your browser on the device you use it on: events, chores and lists in `localStorage`, photos in IndexedDB. Use **Settings → Export backup** to move your data to another device.
+Calendora is a Cloudflare Worker (`src/worker.js`). It serves the app files and a small JSON API backed by a Cloudflare D1 database.
+
+- **Family board (shared):** members, events, chores and stars, rewards, lists, meals and settings are stored in D1 as one JSON document. Every signed-in device stays in sync: changes are saved within about half a second, and devices check for updates every 15 seconds.
+- **Sign-in:** a single family passcode. D1 stores only a salted PBKDF2 hash of it. Each device stays signed in for a year through an HttpOnly cookie, and Settings can sign out every other device.
+- **Kept on each device:** Google Calendar sign-in, photos (IndexedDB), and which members are shown or hidden.
+- **Offline:** the app keeps working from its local copy and syncs when it's back online.
+
+Opened anywhere else (a local file, or GitHub Pages), the app runs in local-only mode in the browser.
 
 ## Running it
 
@@ -31,7 +38,7 @@ It's plain HTML, CSS and JavaScript with no build step.
 
 - Open `index.html` in a browser, or
 - serve the folder with any static server, for example `python3 -m http.server`, or
-- use GitHub Pages, which is already set up for this repo.
+- deploy to Cloudflare: Workers Builds redeploys on every push to `main`. The settings are in `wrangler.toml`, and the D1 tables are created automatically on first use.
 
 Keyboard shortcuts: `←` and `→` move through dates, `t` jumps to today, `d`, `w`, `m` and `s` switch calendar views, and `n` adds a new item.
 
@@ -41,4 +48,6 @@ Keyboard shortcuts: `←` and `→` move through dates, `t` jumps to today, `d`,
 | --- | --- |
 | `index.html` | App shell |
 | `styles.css` | All styling, including the tablet and phone layouts |
-| `app.js` | State, rendering, the recurrence engine, modals, the photo frame and weather |
+| `app.js` | State, rendering, the recurrence engine, modals, the photo frame, weather, Google sync and family sync |
+| `src/worker.js` | Cloudflare Worker: static files plus `/api` (passcode, sessions, shared board in D1) |
+| `wrangler.toml` | Worker settings and the D1 binding |

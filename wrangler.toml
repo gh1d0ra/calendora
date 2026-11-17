@@ -1,0 +1,13 @@
+name = "calendora"
+main = "src/worker.js"
+compatibility_date = "2025-06-01"
+
+[assets]
+directory = "./"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "calendora"
+database_id = "f4154ecc-db4f-4706-9c8d-b5691d761d6a"

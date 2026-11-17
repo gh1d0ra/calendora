@@ -464,3 +464,14 @@ form:not(.is-allday) .only-timed, form.is-allday .only-allday, form.is-repeat .o
 .gdot { --c: #999; width: 14px; height: 14px; border-radius: 50%; background: var(--c); flex: none; display: inline-block; }
 .gsource { display: flex; align-items: center; gap: 8px; font-weight: 800; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--surface-2); margin-bottom: 14px; }
 @media (max-width: 760px) { .sync-pill { padding: 6px; } .sync-pill { font-size: 0; gap: 0; } .sync-pill .gmark { font-size: 12px; } }
+
+/* ------------------------------------------------ family sharing */
+.cloud-pill { display: inline-flex; align-items: center; padding: 8px 14px; border-radius: 999px; background: #FFF1E0; color: #B5651D; font-weight: 800; font-size: 13px; white-space: nowrap; }
+.lock { position: fixed; inset: 0; z-index: 90; background: var(--bg); display: grid; place-items: center; padding: 24px; }
+.lock-card { width: min(420px, 100%); background: var(--surface); border-radius: 28px; box-shadow: var(--shadow-lg); padding: 36px 32px 28px; display: flex; flex-direction: column; gap: 12px; text-align: center; align-items: stretch; }
+.lock-card h1 { margin: 6px 0 0; font-size: 28px; font-weight: 900; }
+.lock-card p { margin: 0 0 6px; }
+.lock-card input { font-size: 18px !important; text-align: center; }
+.logo.big { width: 64px; height: 64px; border-radius: 20px; align-self: center; margin: 0; }
+.logo.big span { width: 28px; height: 28px; border-width: 6px; }
+.lock-error { color: #C2412D; font-weight: 800; min-height: 20px; font-size: 14px; }
