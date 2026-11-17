@@ -1099,6 +1099,59 @@
   }
 
   // ---------------------------------------------------------------- lists
+  // ---------------------------------------------------------------- shopping list: Groceries vs Other
+  // Order of trust: a category someone picked by hand → AnyList's own aisle category →
+  // a built-in word list → Cloudflare AI (for anything the word list doesn't know).
+  const OTHER_PHRASES = ['paper towel', 'toilet paper', 'trash bag', 'garbage bag', 'dish soap', 'dishwasher', 'laundry', 'dog food', 'cat food', 'cat litter', 'pet food', 'light bulb', 'aluminum foil', 'plastic wrap', 'zip bag', 'ziploc', 'paper plate', 'plastic cup', 'gift card', 'hand soap', 'band-aid', 'cotton ball'];
+  const OTHER_WORDS = ['towel', 'towels', 'tissue', 'tissues', 'napkin', 'napkins', 'detergent', 'soap', 'shampoo', 'conditioner', 'toothpaste', 'toothbrush', 'floss', 'deodorant', 'lotion', 'sunscreen', 'razor', 'razors', 'diaper', 'diapers', 'wipes', 'battery', 'batteries', 'bulb', 'bulbs', 'candle', 'candles', 'holder', 'holders', 'cleaner', 'bleach', 'sponge', 'sponges', 'filter', 'filters', 'vitamin', 'vitamins', 'medicine', 'tylenol', 'advil', 'ibuprofen', 'bandage', 'bandages', 'litter', 'charger', 'cable', 'tape', 'glue', 'pen', 'pens', 'pencil', 'pencils', 'notebook', 'gift', 'card', 'cards', 'socks', 'shirt', 'shoes', 'toy', 'toys', 'activities', 'activity', 'flowers', 'plant', 'soil', 'fertilizer', 'hanger', 'hangers', 'storage', 'container', 'containers', 'foil', 'bags', 'plates', 'utensils', 'mop', 'broom', 'vacuum', 'screws', 'nails', 'paint', 'brush', 'comb', 'makeup', 'mascara', 'perfume', 'polish', 'stamps', 'envelopes', 'printer', 'ink', 'frame', 'pillow', 'sheets', 'blanket', 'curtain', 'rug', 'mat', 'basket', 'decor', 'decorations', 'balloons', 'wrapping'];
+  const GROCERY_WORDS = ['milk', 'egg', 'eggs', 'bread', 'butter', 'cheese', 'yogurt', 'cream', 'apple', 'apples', 'banana', 'bananas', 'orange', 'oranges', 'lemon', 'lemons', 'lime', 'limes', 'grape', 'grapes', 'berries', 'strawberries', 'blueberries', 'raspberries', 'avocado', 'avocados', 'tomato', 'tomatoes', 'potato', 'potatoes', 'onion', 'onions', 'garlic', 'lettuce', 'spinach', 'kale', 'carrot', 'carrots', 'broccoli', 'peppers', 'pepper', 'cucumber', 'cucumbers', 'celery', 'mushrooms', 'corn', 'beans', 'peas', 'rice', 'pasta', 'spaghetti', 'noodles', 'flour', 'sugar', 'salt', 'oil', 'vinegar', 'sauce', 'ketchup', 'mustard', 'mayo', 'mayonnaise', 'honey', 'jam', 'jelly', 'peanut', 'nuts', 'almonds', 'cereal', 'oats', 'oatmeal', 'granola', 'crackers', 'chips', 'cookies', 'chocolate', 'candy', 'coffee', 'tea', 'juice', 'soda', 'water', 'wine', 'beer', 'chicken', 'beef', 'pork', 'turkey', 'ham', 'bacon', 'sausage', 'sausages', 'fish', 'salmon', 'tuna', 'shrimp', 'tofu', 'tortilla', 'tortillas', 'taco', 'tacos', 'pizza', 'soup', 'broth', 'stock', 'cinnamon', 'vanilla', 'yeast', 'icecream', 'frozen', 'snack', 'snacks', 'bagel', 'bagels', 'muffin', 'muffins', 'cake', 'pie', 'fruit', 'fruits', 'veggies', 'vegetables', 'salad', 'basil', 'cilantro', 'parsley', 'ginger', 'salsa', 'hummus', 'pickles', 'olives', 'sourdough', 'buns', 'rolls', 'cream cheese', 'zucchini', 'squash', 'pumpkin', 'melon', 'watermelon', 'pineapple', 'mango', 'peach', 'peaches', 'pear', 'pears', 'cherries', 'kiwi', 'dates', 'raisins', 'popcorn', 'pretzels', 'waffles', 'pancake', 'syrup', 'sour', 'feta', 'mozzarella', 'cheddar', 'parmesan', 'ground', 'steak', 'lamb', 'meatballs', 'hot dogs', 'deli', 'oregano', 'paprika', 'cumin', 'thyme', 'rosemary', 'spices', 'seasoning', 'baking', 'powder', 'soda water', 'lemonade', 'kombucha', 'cocoa', 'gum', 'jerky', 'applesauce'];
+  const GROCERY_AL = /produce|meat|seafood|dairy|egg|bakery|bread|deli|frozen|canned|beverage|drink|snack|breakfast|cereal|condiment|sauce|spice|season|baking|pasta|rice|grain|international|ethnic|candy|sweet|coffee|tea|wine|beer|alcohol|oil|soup|nut|cheese|fruit|vegetable|refrigerated|grocery|food/i;
+  const OTHER_AL = /household|cleaning|paper|personal|health|beauty|baby|pet|pharmacy|office|home|garden|hardware|clothing|electronic|supplies|toiletr|laundry|medicine/i;
+  const wordsOf = t => String(t || '').toLowerCase().replace(/[^a-z\s'-]/g, ' ').split(/\s+/).filter(Boolean);
+  function guessCat(text) {
+    const t = String(text || '').toLowerCase();
+    if (OTHER_PHRASES.some(p => t.includes(p))) return 'other';
+    const w = wordsOf(t);
+    if (w.some(x => OTHER_WORDS.includes(x))) return 'other';
+    if (w.some(x => GROCERY_WORDS.includes(x)) || GROCERY_WORDS.some(p => p.includes(' ') && t.includes(p))) return 'grocery';
+    return null;
+  }
+  function catOf(item) {
+    if (item.cat === 'grocery' || item.cat === 'other') return item.cat;
+    if (item.alCat) { if (GROCERY_AL.test(item.alCat)) return 'grocery'; if (OTHER_AL.test(item.alCat)) return 'other'; }
+    return guessCat(item.text);
+  }
+  const shoppingList = () => state.lists.find(l => l.id === state.settings.shoppingListId) || state.lists.find(l => l.split) || state.lists.find(l => /grocer|need to buy|shopping/i.test(l.name)) || null;
+
+  const catAsk = { busy: false, tried: new Set() };
+  async function categorizeUnknown(list) {
+    if (cloud.mode !== 'server' || !cloudOn() || catAsk.busy) return;
+    const unknown = list.items.filter(i => !i.done && !catOf(i) && !catAsk.tried.has(i.text.toLowerCase())).slice(0, 40);
+    if (!unknown.length) return;
+    catAsk.busy = true;
+    unknown.forEach(i => catAsk.tried.add(i.text.toLowerCase()));
+    try {
+      const r = await api('/api/categorize', { method: 'POST', body: JSON.stringify({ items: unknown.map(i => i.text) }) });
+      if (r.ok && Array.isArray(r.data.cats)) {
+        let changed = false;
+        unknown.forEach((it, k) => {
+          const c = r.data.cats[k];
+          const live = list.items.find(x => x.id === it.id);
+          if (live && !live.cat && (c === 'grocery' || c === 'other')) { live.cat = c; live.catBy = 'ai'; changed = true; }
+        });
+        if (changed) {
+          save();
+          const ae = document.activeElement, inAdd = ae && ae.closest && ae.closest('.add-item'), val = inAdd ? ae.value : '';
+          if (state.ui.view === 'lists' && !modalOpen && (!isTyping() || inAdd)) {
+            renderView();
+            if (inAdd) { const i = $('.add-item input'); if (i) { i.value = val; i.focus(); } }
+          }
+        }
+      }
+    } catch (e) { /* try again next time the list is opened */ }
+    catAsk.busy = false;
+  }
+
   function renderLists() {
     if (!state.lists.find(l => l.id === state.ui.listId)) state.ui.listId = state.lists[0] ? state.lists[0].id : null;
     const list = state.lists.find(l => l.id === state.ui.listId);
@@ -1113,16 +1166,24 @@
       const row = i => `<div class="litem ${i.done ? 'done' : ''}">
           <button class="lcheck" data-action="toggle-item" data-id="${i.id}" aria-label="Toggle"><svg viewBox="0 0 24 24"><path d="M6 12.5l4 4 8-9"/></svg></button>
           <span class="ltext" data-action="edit-item" data-id="${i.id}">${esc(i.text)}</span>
+          ${list.split && !i.done ? `<button class="mini-btn move-cat" data-action="move-cat" data-id="${i.id}" title="Move to ${catOf(i) === 'grocery' ? 'Other' : 'Groceries'}" aria-label="Move to the other section">${catOf(i) === 'grocery' ? '🧺' : '🥕'}</button>` : ''}
           <button class="mini-btn" data-action="delete-item" data-id="${i.id}" aria-label="Remove">${icon('trash')}</button>
         </div>`;
+      const sections = list.split
+        ? [['grocery', '🥕 Groceries'], ['other', '🧺 Other']].map(([k, label]) => {
+            const items = open.filter(i => (catOf(i) || 'other') === k);
+            return `<div class="cat-head"><span>${label}</span><span class="muted">${items.length}</span></div>${items.map(row).join('') || '<div class="empty-sm">Nothing here</div>'}`;
+          }).join('')
+        : open.map(row).join('');
       main = `<div class="list-head"><span class="lemoji big">${esc(list.emoji || '📝')}</span><h2>${esc(list.name)}</h2><span class="spacer"></span>
           <button class="btn" data-action="edit-list" data-id="${list.id}">${icon('edit')} Edit</button></div>
         <form class="add-item" data-form="add-item"><input name="text" placeholder="Add an item…" autocomplete="off" enterkeyhint="done" /><button class="btn primary" type="submit">Add</button></form>
-        <div class="litems">${open.map(row).join('') || '<div class="empty-sm">All done! ✨</div>'}
+        <div class="litems">${open.length ? sections : '<div class="empty-sm">All done! ✨</div>'}
           ${done.length ? `<div class="done-head"><span>Completed (${done.length})</span><button class="link-btn" data-action="clear-done">Clear completed</button></div>${done.map(row).join('')}` : ''}
         </div>`;
     }
     $('#view').innerHTML = `<div class="lists"><div class="list-side card">${side}</div><div class="list-main card">${main}</div></div>`;
+    if (list && list.split) categorizeUnknown(list);
   }
 
   // ---------------------------------------------------------------- recipes
@@ -1342,7 +1403,7 @@
         ${img || (r.ingredients || []).length ? `<div class="rv-side">
           ${img ? `<img class="rv-photo" src="${esc(img)}" alt="${esc(r.title)}" data-action="zoom-photo">` : ''}
           ${(r.ingredients || []).length ? `<h3>Ingredients</h3><ul class="rv-ing">${r.ingredients.map((x, i) => `<li class="${checks.ing[i] ? 'got' : ''}" data-action="tick-ing" data-i="${i}"><span class="tick"></span>${esc(x)}</li>`).join('')}</ul>
-            <button class="btn small" data-action="recipe-to-list" data-id="${r.id}">🛒 Add to Groceries</button>` : ''}
+            <button class="btn small" data-action="recipe-to-list" data-id="${r.id}">🛒 Add to ${esc((shoppingList() || { name: 'shopping list' }).name)}</button>` : ''}
         </div>` : ''}
         <div class="rv-main">
           ${(r.steps || []).length ? `<h3>Steps</h3><ol class="rv-steps">${r.steps.map((x, i) => /^—.*—$/.test(x) ? `<li class="section">${esc(x.replace(/—/g, '').trim())}</li>` : `<li class="${i === checks.step ? 'current' : i < checks.step ? 'done' : ''}" data-action="tick-step" data-i="${i}">${esc(x)}</li>`).join('')}</ol>`
@@ -1829,11 +1890,17 @@
     modal({
       title: isNew ? 'New list' : 'Edit list',
       body: `<input class="title-input" name="name" placeholder="List name" value="${esc(ll.name)}" autofocus maxlength="40" />
-        <div class="field"><span>Icon</span>${emojiPicker(LIST_EMOJI.includes(ll.emoji) ? LIST_EMOJI : [ll.emoji, ...LIST_EMOJI], ll.emoji)}</div>`,
+        <div class="field"><span>Icon</span>${emojiPicker(LIST_EMOJI.includes(ll.emoji) ? LIST_EMOJI : [ll.emoji, ...LIST_EMOJI], ll.emoji)}</div>
+        <label class="check-row"><input type="checkbox" name="split" ${ll.split ? 'checked' : ''}> Split into 🥕 Groceries and 🧺 Other (sorted automatically)</label>
+        <label class="check-row"><input type="checkbox" name="shopping" ${shoppingList() && shoppingList().id === ll.id ? 'checked' : ''}> This is our shopping list (recipes and meals add ingredients here)</label>`,
       onSave(form) {
         const name = fval(form, 'name');
         if (!name) { form.elements.name.classList.add('invalid'); return false; }
-        const out = { ...ll, name, emoji: fall(form, 'emoji')[0] || '📝' };
+        const out = { ...ll, name, emoji: fall(form, 'emoji')[0] || '📝', split: form.elements.split.checked };
+        if (form.elements.shopping.checked) state.settings.shoppingListId = out.id;
+        // keep the AnyList link pointing at this list even after a rename
+        const al = state.settings.anylist;
+        if (al && al.on && !al.listId && /grocer/i.test(ll.name || '')) al.listId = out.id;
         if (isNew) { state.lists.push(out); state.ui.listId = out.id; } else state.lists = state.lists.map(x => x.id === out.id ? out : x);
         save(); renderView();
       },
@@ -1898,8 +1965,8 @@
     });
   }
   function addToGroceries(items) {
-    let gl = state.lists.find(l => /grocer/i.test(l.name));
-    if (!gl) { gl = { id: uid(), name: 'Groceries', emoji: '🛒', items: [] }; state.lists.unshift(gl); }
+    let gl = shoppingList();
+    if (!gl) { gl = { id: uid(), name: 'Need to Buy', emoji: '🛒', items: [], split: true }; state.lists.unshift(gl); state.settings.shoppingListId = gl.id; }
     const have = new Set(gl.items.filter(i => !i.done).map(i => i.text.toLowerCase()));
     const add = items.filter(t => t && !have.has(t.toLowerCase()));
     add.slice().reverse().forEach(t => gl.items.unshift({ id: uid(), text: t, done: false }));
@@ -1942,6 +2009,11 @@
     },
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
+    'move-cat'(el) {
+      const l = currentList(); const it = l && l.items.find(i => i.id === el.dataset.id); if (!it) return;
+      it.cat = catOf(it) === 'grocery' ? 'other' : 'grocery'; it.catBy = 'user';
+      save(); renderView(); toast(`Moved “${it.text}” to ${it.cat === 'grocery' ? 'Groceries' : 'Other'}`);
+    },
     async 'anylist-sync'() {
       anylist.syncing = true; renderView();
       try {
@@ -2771,7 +2843,7 @@
     const cfg = state.settings.anylist || {};
     const info = anylist.info;
     const lists = state.lists || [];
-    const target = lists.find(l => l.id === cfg.listId) || lists.find(l => /grocer/i.test(l.name));
+    const target = lists.find(l => l.id === cfg.listId) || shoppingList();
     const st = info && info.status;
     let statusLine = '';
     if (!info) statusLine = '<span class="muted">Checking…</span>';
