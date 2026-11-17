@@ -27,6 +27,7 @@
   const ICONS = {
     calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>',
     chores: '<rect x="3" y="3" width="18" height="18" rx="5"/><path d="M8 12.5l2.8 2.8L16.5 9"/>',
+    baby: '<circle cx="12" cy="11" r="7.5"/><path d="M9.2 10.2h.01M14.8 10.2h.01M9.6 13.6c1.3 1.1 3.5 1.1 4.8 0M12 3.5c-1 0-1.6.8-1.2 1.6"/><path d="M8 20.5c1.2.6 2.5 1 4 1s2.8-.4 4-1"/>',
     rewards: '<path d="M12 3.2l2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.6l-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z"/>',
     lists: '<path d="M9.5 6.5H20M9.5 12H20M9.5 17.5H20"/><path d="M4 6.5l1 1 2-2M4 12l1 1 2-2M4 17.5l1 1 2-2"/>',
     meals: '<path d="M7 3v7.5M4.5 3v4.5a2.5 2.5 0 0 0 5 0V3M7 10.5V21M17 21V3c-2.5 1.2-3.5 4-3.5 7.5V13H17"/>',
@@ -91,10 +92,10 @@
   function defaults() {
     return {
       version: 1,
-      members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [],
+      members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [], babies: [], babyLog: [],
       hidden: [], gEvents: [], gSyncedAt: null,
       settings: {
-        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true,
+        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial',
         google: { clientId: '', connected: false, accounts: [], calendars: {}, defaultCal: '' },
       },
       ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan' },
@@ -661,6 +662,314 @@
     el.title = g.error || 'Sync with Google Calendar now';
   }
 
+  // ---------------------------------------------------------------- baby tracker (off by default; Settings → Baby tracker)
+  // Log entries live in the shared board: { id, babyId, type, start, end, ... } with times in ms.
+  // A running timer is an entry whose end is null (sleep) or whose last nursing segment has no end.
+  const BABY_TYPES = {
+    feed: { icon: '🍼', label: 'Feed' }, sleep: { icon: '😴', label: 'Sleep' }, diaper: { icon: '🧷', label: 'Diaper' },
+    pump: { icon: '🥛', label: 'Pump' }, growth: { icon: '📏', label: 'Growth' }, med: { icon: '💊', label: 'Medicine' },
+    temp: { icon: '🌡️', label: 'Temp' }, note: { icon: '📝', label: 'Note' },
+  };
+  const bUI = { day: today(), babyId: null };
+  const babies = () => state.babies || [];
+  const blog = () => state.babyLog || [];
+  const curBaby = () => babies().find(b => b.id === (bUI.babyId || state.ui.babyId)) || babies()[0] || null;
+  const MIN = 60000, HOUR = 3600000;
+  const dur = ms => { ms = Math.max(0, ms); if (ms < MIN) return `${Math.floor(ms / 1000)}s`; const h = Math.floor(ms / HOUR), m = Math.floor((ms % HOUR) / MIN); return h ? `${h}h ${m}m` : `${m}m`; };
+  const clock = ms => { ms = Math.max(0, ms); const s = Math.floor(ms / 1000); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? `${h}:${pad(m)}:${pad(x)}` : `${m}:${pad(x)}`; };
+  const ago = ms => (Date.now() - ms < MIN ? 'just now' : `${dur(Date.now() - ms)} ago`);
+  const hmOf = ms => { const d = new Date(ms); return fmtTime(`${pad(d.getHours())}:${pad(d.getMinutes())}`); };
+  const toLocalInput = ms => { const d = new Date(ms); return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const fromLocalInput = v => { const [d, t] = String(v || '').split('T'); if (!d || !t) return Date.now(); const [y, m, dd] = d.split('-').map(Number); const [h, mi] = t.split(':').map(Number); return new Date(y, m - 1, dd, h, mi).getTime(); };
+  const imperial = () => (state.settings.babyUnits || 'imperial') === 'imperial';
+  const volUnit = () => (imperial() ? 'oz' : 'ml');
+  function ageText(birth) {
+    if (!birth) return '';
+    const b = parse(birth), t = today();
+    const days = daysBetween(b, t);
+    if (days < 0) return 'not born yet';
+    if (days < 14) return `${days} day${days === 1 ? '' : 's'} old`;
+    if (days < 70) return `${Math.floor(days / 7)} weeks old`;
+    let months = (t.getFullYear() - b.getFullYear()) * 12 + t.getMonth() - b.getMonth() - (t.getDate() < b.getDate() ? 1 : 0);
+    if (months < 24) return `${months} months old`;
+    return `${Math.floor(months / 12)} years ${months % 12 ? `${months % 12} mo` : ''} old`;
+  }
+  // Very rough, general wake-window ranges by age (minutes). Shown as a guide only.
+  function wakeWindow(birth) {
+    if (!birth) return null;
+    const m = daysBetween(parse(birth), today()) / 30.4;
+    const table = [[1, 35, 60], [2, 60, 90], [3, 75, 105], [5, 90, 150], [7, 120, 180], [10, 150, 210], [14, 180, 240], [19, 240, 330], [36, 300, 360]];
+    const row = table.find(r => m < r[0]);
+    return row ? { min: row[1], max: row[2] } : null;
+  }
+  const segOpen = e => e.segs && e.segs.length && !e.segs[e.segs.length - 1].to;
+  const isRunning = e => (e.type === 'sleep' && !e.end) || (e.type === 'feed' && e.kind === 'breast' && !e.end);
+  const feedMs = e => (e.segs || []).reduce((a, s) => a + ((s.to || Date.now()) - s.from), 0);
+  const sideMs = (e, side) => (e.segs || []).filter(s => s.side === side).reduce((a, s) => a + ((s.to || Date.now()) - s.from), 0);
+  function entryText(e) {
+    const u = e.unit || volUnit();
+    switch (e.type) {
+      case 'feed':
+        if (e.kind === 'bottle') return `Bottle ${e.amount || '?'} ${u}${e.milk ? ` · ${e.milk}` : ''}`;
+        if (e.kind === 'solids') return `Solids${e.food ? `: ${e.food}` : ''}${e.amount ? ` · ${e.amount}` : ''}`;
+        { const L = sideMs(e, 'L'), R = sideMs(e, 'R'); return `Nursed ${dur(feedMs(e))}${L || R ? ` (${[L && `L ${dur(L)}`, R && `R ${dur(R)}`].filter(Boolean).join(' · ')})` : ''}`; }
+      case 'sleep': return e.end ? `Slept ${dur(e.end - e.start)}` : 'Sleeping';
+      case 'diaper': return `Diaper · ${{ wet: 'Wet', dirty: 'Dirty', mixed: 'Wet + dirty', dry: 'Dry' }[e.kind] || e.kind}`;
+      case 'pump': return `Pumped ${[e.left && `L ${e.left}`, e.right && `R ${e.right}`].filter(Boolean).join(' · ') || e.amount || ''} ${u}`;
+      case 'growth': return ['weight', 'length', 'head'].filter(k => e[k]).map(k => `${{ weight: 'Weight', length: 'Length', head: 'Head' }[k]} ${e[k]} ${k === 'weight' ? (imperial() ? 'lb' : 'kg') : imperial() ? 'in' : 'cm'}`).join(' · ') || 'Growth';
+      case 'med': return `${e.name || 'Medicine'}${e.dose ? ` · ${e.dose}` : ''}`;
+      case 'temp': return `${e.value || '?'} °${imperial() ? 'F' : 'C'}`;
+      default: return e.text || 'Note';
+    }
+  }
+  function overlapMs(a, b, from, to) { return Math.max(0, Math.min(b, to) - Math.max(a, from)); }
+  function dayStats(babyId, ds) {
+    const from = parse(ds).getTime(), to = from + 24 * HOUR;
+    const L = blog().filter(e => e.babyId === babyId);
+    const inDay = L.filter(e => e.start >= from && e.start < to);
+    const sleeps = L.filter(e => e.type === 'sleep');
+    const sleepMs = sleeps.reduce((a, e) => a + overlapMs(e.start, e.end || Date.now(), from, to), 0);
+    const feeds = inDay.filter(e => e.type === 'feed');
+    const bottleVol = feeds.filter(e => e.kind === 'bottle').reduce((a, e) => a + (Number(e.amount) || 0), 0);
+    const diapers = inDay.filter(e => e.type === 'diaper');
+    return {
+      sleepMs, naps: sleeps.filter(e => e.start >= from && e.start < to).length, feeds: feeds.length, bottleVol,
+      nurseMs: feeds.filter(e => e.kind === 'breast').reduce((a, e) => a + feedMs(e), 0),
+      wet: diapers.filter(e => e.kind === 'wet' || e.kind === 'mixed').length, dirty: diapers.filter(e => e.kind === 'dirty' || e.kind === 'mixed').length,
+    };
+  }
+
+  function renderBaby() {
+    const b = curBaby();
+    const dsel = bUI.day, ds = ymd(dsel), isToday = ds === todayStr();
+    $('#toolbar').innerHTML = `
+      <div class="nav-group">
+        <button class="icon-btn" data-action="nav" data-dir="-1" aria-label="Previous day">${icon('left')}</button>
+        <button class="btn" data-action="today">Today</button>
+        <button class="icon-btn" data-action="nav" data-dir="1" aria-label="Next day">${icon('right')}</button>
+      </div>
+      <h1>${b ? esc(b.name) : 'Baby'} <span class="muted">${isToday ? 'Today' : `${DOW[dsel.getDay()]} ${MON[dsel.getMonth()]} ${dsel.getDate()}`}</span></h1>
+      ${babies().length > 1 ? `<div class="seg">${babies().map(x => `<button class="${b && b.id === x.id ? 'on' : ''}" data-action="pick-baby" data-id="${x.id}">${esc(x.name)}</button>`).join('')}</div>` : ''}
+      <span class="spacer"></span>
+      <button class="btn" data-action="baby-edit">${icon(b ? 'edit' : 'plus')} ${b ? 'Baby details' : 'Add baby'}</button>`;
+    if (!b) {
+      $('#view').innerHTML = `<div class="empty card"><div style="font-size:52px">👶</div><p>Add your baby to start tracking feeds, sleep and diapers.</p><button class="btn primary" data-action="baby-edit">${icon('plus')} Add baby</button></div>`;
+      return;
+    }
+    const L = blog().filter(e => e.babyId === b.id);
+    const lastFeed = L.filter(e => e.type === 'feed').sort((x, y) => y.start - x.start)[0];
+    const sleeping = L.find(e => e.type === 'sleep' && !e.end);
+    const lastSleep = L.filter(e => e.type === 'sleep' && e.end).sort((x, y) => y.end - x.end)[0];
+    const nursing = L.find(e => e.type === 'feed' && e.kind === 'breast' && !e.end);
+    const lastBreast = L.filter(e => e.type === 'feed' && e.kind === 'breast' && e.segs && e.segs.length).sort((x, y) => y.start - x.start)[0];
+    const nextSide = lastBreast ? (lastBreast.segs[lastBreast.segs.length - 1].side === 'L' ? 'R' : 'L') : null;
+    const lastDiaper = L.filter(e => e.type === 'diaper').sort((x, y) => y.start - x.start)[0];
+    const st = dayStats(b.id, ds);
+    const ww = wakeWindow(b.birth);
+    let napHint = '';
+    if (!sleeping && lastSleep && ww) {
+      const from = lastSleep.end + ww.min * MIN, to = lastSleep.end + ww.max * MIN;
+      napHint = Date.now() > to ? 'Past the usual wake window' : `${hmOf(from)} – ${hmOf(to)}`;
+    }
+    const timers = [];
+    if (nursing) {
+      const open = segOpen(nursing), side = open ? nursing.segs[nursing.segs.length - 1].side : null;
+      timers.push(`<div class="b-timer feed">
+        <div class="bt-main"><span class="bt-icon">🤱</span><div><b>Nursing ${open ? `· ${side === 'L' ? 'Left' : 'Right'}` : '· paused'}</b>
+          <div class="bt-sub">L <span data-tick-side="L" data-id="${nursing.id}">${clock(sideMs(nursing, 'L'))}</span> · R <span data-tick-side="R" data-id="${nursing.id}">${clock(sideMs(nursing, 'R'))}</span></div></div>
+          <span class="bt-clock" data-tick-feed="${nursing.id}">${clock(feedMs(nursing))}</span></div>
+        <div class="bt-actions">
+          <button class="btn ${open && side === 'L' ? 'primary' : ''}" data-action="nurse-side" data-side="L">Left</button>
+          <button class="btn ${open && side === 'R' ? 'primary' : ''}" data-action="nurse-side" data-side="R">Right</button>
+          ${open ? '<button class="btn" data-action="nurse-pause">Pause</button>' : ''}
+          <button class="btn primary" data-action="nurse-stop">Done</button>
+        </div></div>`);
+    }
+    if (sleeping) {
+      timers.push(`<div class="b-timer sleep">
+        <div class="bt-main"><span class="bt-icon">😴</span><div><b>Sleeping</b><div class="bt-sub">since ${hmOf(sleeping.start)}</div></div>
+          <span class="bt-clock" data-tick-since="${sleeping.start}">${clock(Date.now() - sleeping.start)}</span></div>
+        <div class="bt-actions"><button class="btn primary" data-action="sleep-stop">Woke up</button></div></div>`);
+    }
+    const quick = [
+      ['nurse', '🤱', nursing ? 'Nursing…' : `Nurse${nextSide ? ` · start ${nextSide === 'L' ? 'left' : 'right'}` : ''}`],
+      ['bottle', '🍼', 'Bottle'], ['solids', '🥣', 'Solids'],
+      ['sleep', '😴', sleeping ? 'Woke up' : 'Sleep'], ['diaper', '🧷', 'Diaper'], ['pump', '🥛', 'Pump'],
+      ['growth', '📏', 'Growth'], ['med', '💊', 'Medicine'], ['temp', '🌡️', 'Temp'], ['note', '📝', 'Note'],
+    ];
+    const entries = L.filter(e => { const from = parse(ds).getTime(); return (e.start >= from && e.start < from + 24 * HOUR) || (e.type === 'sleep' && e.start < from && (e.end || Date.now()) > from); }).sort((x, y) => y.start - x.start);
+    // 7-day trend
+    const days7 = [6, 5, 4, 3, 2, 1, 0].map(i => { const d = addDays(dsel, -i); return { d, s: dayStats(b.id, ymd(d)) }; });
+    const maxSleep = Math.max(HOUR, ...days7.map(x => x.s.sleepMs)), maxFeeds = Math.max(1, ...days7.map(x => x.s.feeds));
+    const bars = (key, max, fmt) => days7.map(x => `<div class="bar-col ${ymd(x.d) === ds ? 'sel' : ''}"><div class="bar" style="height:${Math.round(x.s[key] / max * 100)}%"></div><span class="bar-v">${fmt(x.s[key])}</span><span class="bar-d">${DOW[x.d.getDay()][0]}</span></div>`).join('');
+    $('#view').innerHTML = `<div class="baby" style="--c:${b.color || '#9B6BDF'}">
+      <div class="b-cards">
+        <div class="b-card"><span class="bc-ic">🍼</span><div><div class="bc-k">Last fed</div><div class="bc-v" ${lastFeed ? `data-tick-ago="${lastFeed.end || lastFeed.start}"` : ''}>${lastFeed ? ago(lastFeed.end || lastFeed.start) : '—'}</div><div class="bc-s">${lastFeed ? esc(entryText(lastFeed)) : 'No feeds yet'}${nextSide ? ` · next: ${nextSide === 'L' ? 'left' : 'right'}` : ''}</div></div></div>
+        <div class="b-card"><span class="bc-ic">${sleeping ? '😴' : '🌤️'}</span><div><div class="bc-k">${sleeping ? 'Asleep for' : 'Awake for'}</div><div class="bc-v" ${sleeping ? `data-tick-dur="${sleeping.start}"` : lastSleep ? `data-tick-dur="${lastSleep.end}"` : ''}>${sleeping ? dur(Date.now() - sleeping.start) : lastSleep ? dur(Date.now() - lastSleep.end) : '—'}</div><div class="bc-s">${napHint ? `Next sleep around ${napHint}` : lastSleep ? `Last sleep ${dur(lastSleep.end - lastSleep.start)}` : 'Log a sleep to see wake windows'}</div></div></div>
+        <div class="b-card"><span class="bc-ic">🧷</span><div><div class="bc-k">Diapers ${isToday ? 'today' : ''}</div><div class="bc-v">${st.wet} wet · ${st.dirty} dirty</div><div class="bc-s">${lastDiaper ? `Last change ${ago(lastDiaper.start)}` : 'No changes logged'}</div></div></div>
+        <div class="b-card"><span class="bc-ic">📊</span><div><div class="bc-k">${isToday ? 'Today' : 'This day'}</div><div class="bc-v">${st.feeds} feeds · ${dur(st.sleepMs)} sleep</div><div class="bc-s">${[st.nurseMs && `nursed ${dur(st.nurseMs)}`, st.bottleVol && `${Math.round(st.bottleVol * 10) / 10} ${volUnit()} bottle`, `${st.naps} sleeps`].filter(Boolean).join(' · ')}</div></div></div>
+      </div>
+      ${timers.join('')}
+      <div class="b-quick">${quick.map(([k, ic, l]) => `<button class="bq" data-action="baby-log" data-kind="${k}"><span>${ic}</span>${esc(l)}</button>`).join('')}</div>
+      <div class="b-lower">
+        <div class="b-timeline card"><h3>${isToday ? 'Today' : 'Log'}</h3>
+          ${entries.length ? entries.map(e => `<div class="b-entry ${isRunning(e) ? 'running' : ''}" data-action="baby-entry" data-id="${e.id}">
+            <span class="be-time">${hmOf(e.start)}</span><span class="be-ic">${(e.type === 'feed' && e.kind === 'breast') ? '🤱' : e.type === 'feed' && e.kind === 'solids' ? '🥣' : BABY_TYPES[e.type].icon}</span>
+            <span class="be-text">${esc(entryText(e))}${e.type === 'sleep' && e.end ? ` <small class="muted">${hmOf(e.start)}–${hmOf(e.end)}</small>` : ''}${e.notes ? `<small class="muted be-note">${esc(e.notes)}</small>` : ''}</span>
+          </div>`).join('') : '<div class="empty-sm">Nothing logged yet — use the buttons above.</div>'}
+        </div>
+        <div class="b-trends card"><h3>Last 7 days</h3>
+          <div class="trend"><div class="trend-k">Sleep</div><div class="bars">${bars('sleepMs', maxSleep, v => (v ? `${Math.round(v / HOUR * 10) / 10}h` : ''))}</div></div>
+          <div class="trend"><div class="trend-k">Feeds</div><div class="bars">${bars('feeds', maxFeeds, v => v || '')}</div></div>
+          ${ww ? `<p class="muted small">Wake-window guide for ${esc(ageText(b.birth))}: about ${dur(ww.min * MIN)}–${dur(ww.max * MIN)}. Every baby is different — this is a general guide, not medical advice.</p>` : ''}
+        </div>
+      </div></div>`;
+  }
+  function tickBaby() {
+    if (state.ui.view !== 'baby') return;
+    const now = Date.now();
+    $$('[data-tick-since]').forEach(el => { el.textContent = clock(now - Number(el.dataset.tickSince)); });
+    $$('[data-tick-dur]').forEach(el => { el.textContent = dur(now - Number(el.dataset.tickDur)); });
+    $$('[data-tick-ago]').forEach(el => { el.textContent = ago(Number(el.dataset.tickAgo)); });
+    $$('[data-tick-feed]').forEach(el => { const e = blog().find(x => x.id === el.dataset.tickFeed); if (e) el.textContent = clock(feedMs(e)); });
+    $$('[data-tick-side]').forEach(el => { const e = blog().find(x => x.id === el.dataset.id); if (e) el.textContent = clock(sideMs(e, el.dataset.tickSide)); });
+  }
+
+  const addLog = e => { state.babyLog = [...blog(), { id: uid(), babyId: curBaby().id, ...e }]; save(); renderView(); };
+  const updLog = (id, patch) => { state.babyLog = blog().map(e => (e.id === id ? { ...e, ...patch } : e)); save(); renderView(); };
+  const runningFeed = () => blog().find(e => e.babyId === curBaby().id && e.type === 'feed' && e.kind === 'breast' && !e.end);
+  const runningSleep = () => blog().find(e => e.babyId === curBaby().id && e.type === 'sleep' && !e.end);
+  function nurseSide(side) {
+    const now = Date.now(), f = runningFeed();
+    if (!f) { addLog({ type: 'feed', kind: 'breast', start: now, end: null, segs: [{ side, from: now, to: null }] }); return; }
+    const segs = f.segs.map(s => (s.to ? s : { ...s, to: now }));
+    const last = f.segs[f.segs.length - 1];
+    if (!last.to && last.side === side) return;
+    segs.push({ side, from: now, to: null });
+    updLog(f.id, { segs });
+  }
+  function nursePause() { const f = runningFeed(); if (f) updLog(f.id, { segs: f.segs.map(s => (s.to ? s : { ...s, to: Date.now() })) }); }
+  function nurseStop() {
+    const f = runningFeed(); if (!f) return;
+    const now = Date.now(), segs = f.segs.map(s => (s.to ? s : { ...s, to: now }));
+    updLog(f.id, { segs, end: segs.length ? segs[segs.length - 1].to : now });
+    toast(`Nursed ${dur(segs.reduce((a, s) => a + s.to - s.from, 0))}`);
+  }
+
+  function babyEntryModal(kind, entry) {
+    const b = curBaby(); if (!b) return;
+    const e = entry || {};
+    const isNew = !entry;
+    const t = e.start || Date.now();
+    const timeField = (name, label, ms) => `<label class="field"><span>${label}</span><input type="datetime-local" name="${name}" value="${toLocalInput(ms)}"></label>`;
+    const seg = (name, opts, cur) => `<div class="seg wide">${opts.map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}" ${cur === v ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div>`;
+    const u = volUnit();
+    let title = '', body = '';
+    const type = entry ? entry.type : { nurse: 'feed', bottle: 'feed', solids: 'feed' }[kind] || kind;
+    const sub = entry ? entry.kind : kind;
+    if (type === 'feed' && sub === 'breast' || kind === 'nurse') {
+      title = 'Nursing';
+      const L = entry ? Math.round(sideMs(entry, 'L') / MIN) : '', R = entry ? Math.round(sideMs(entry, 'R') / MIN) : '';
+      body = `${isNew ? '<p class="muted">Start a timer, or enter a feed that already happened.</p><div class="row"><button type="button" class="btn primary block" data-start="L">▶ Start left</button><button type="button" class="btn primary block" data-start="R">▶ Start right</button></div><hr class="soft">' : ''}
+        ${timeField('start', 'Started', t)}
+        <div class="row"><label class="field"><span>Left (minutes)</span><input type="number" name="L" min="0" max="240" value="${L}"></label><label class="field"><span>Right (minutes)</span><input type="number" name="R" min="0" max="240" value="${R}"></label></div>`;
+    } else if (type === 'feed' && (sub === 'bottle')) {
+      title = 'Bottle';
+      body = `${timeField('start', 'Time', t)}<label class="field"><span>Amount (${u})</span><input type="number" name="amount" step="0.5" min="0" value="${esc(e.amount || '')}" autofocus></label>
+        <div class="field"><span>Milk</span>${seg('milk', [['Breast milk', 'Breast milk'], ['Formula', 'Formula'], ['Mixed', 'Mixed']], e.milk || 'Formula')}</div>`;
+    } else if (type === 'feed') {
+      title = 'Solids';
+      body = `${timeField('start', 'Time', t)}<label class="field"><span>Food</span><input name="food" value="${esc(e.food || '')}" placeholder="e.g. banana, oatmeal" autofocus></label>
+        <label class="field"><span>Amount</span><input name="amount" value="${esc(e.amount || '')}" placeholder="e.g. 2 tbsp"></label>
+        <div class="field"><span>Reaction</span>${seg('reaction', [['', 'None'], ['Loved it', 'Loved it'], ['Disliked', 'Disliked'], ['Allergy?', 'Allergy?']], e.reaction || '')}</div>`;
+    } else if (type === 'sleep') {
+      title = 'Sleep';
+      body = `${isNew ? '<button type="button" class="btn primary block" data-sleep-now>▶ Start sleep timer now</button><hr class="soft"><p class="muted">Or log a sleep that already happened:</p>' : ''}
+        ${timeField('start', 'Fell asleep', e.start || Date.now() - HOUR)}${timeField('end', 'Woke up', e.end || Date.now())}`;
+    } else if (type === 'diaper') {
+      title = 'Diaper';
+      body = `${timeField('start', 'Time', t)}<div class="field"><span>Type</span>${seg('kind', [['wet', '💧 Wet'], ['dirty', '💩 Dirty'], ['mixed', 'Both'], ['dry', 'Dry']], e.kind || 'wet')}</div>`;
+    } else if (type === 'pump') {
+      title = 'Pumping';
+      body = `${timeField('start', 'Time', t)}<div class="row"><label class="field"><span>Left (${u})</span><input type="number" step="0.5" min="0" name="left" value="${esc(e.left || '')}"></label><label class="field"><span>Right (${u})</span><input type="number" step="0.5" min="0" name="right" value="${esc(e.right || '')}"></label></div>`;
+    } else if (type === 'growth') {
+      title = 'Growth';
+      const wu = imperial() ? 'lb' : 'kg', lu = imperial() ? 'in' : 'cm';
+      body = `${timeField('start', 'Date', t)}<div class="row"><label class="field"><span>Weight (${wu})</span><input type="number" step="0.01" min="0" name="weight" value="${esc(e.weight || '')}"></label>
+        <label class="field"><span>Length (${lu})</span><input type="number" step="0.1" min="0" name="length" value="${esc(e.length || '')}"></label>
+        <label class="field"><span>Head (${lu})</span><input type="number" step="0.1" min="0" name="head" value="${esc(e.head || '')}"></label></div>`;
+    } else if (type === 'med') {
+      title = 'Medicine';
+      body = `${timeField('start', 'Time', t)}<label class="field"><span>Medicine</span><input name="name" value="${esc(e.name || '')}" placeholder="e.g. vitamin D drops" autofocus></label>
+        <label class="field"><span>Dose</span><input name="dose" value="${esc(e.dose || '')}" placeholder="as given"></label>`;
+    } else if (type === 'temp') {
+      title = 'Temperature';
+      body = `${timeField('start', 'Time', t)}<label class="field"><span>Temperature (°${imperial() ? 'F' : 'C'})</span><input type="number" step="0.1" name="value" value="${esc(e.value || '')}" autofocus></label>`;
+    } else {
+      title = 'Note';
+      body = `${timeField('start', 'Time', t)}<label class="field"><span>Note</span><textarea name="text" rows="3" autofocus>${esc(e.text || '')}</textarea></label>`;
+    }
+    if (type !== 'note') body += `<label class="field"><span>Notes <small class="muted">(optional)</small></span><input name="notes" value="${esc(e.notes || '')}"></label>`;
+    modal({
+      title: `${isNew ? '' : 'Edit · '}${title}`,
+      body,
+      onOpen(form) {
+        $$('[data-start]', form).forEach(x => x.addEventListener('click', () => { closeModal(); nurseSide(x.dataset.start); }));
+        const sn = $('[data-sleep-now]', form);
+        if (sn) sn.addEventListener('click', () => { closeModal(); if (!runningSleep()) addLog({ type: 'sleep', start: Date.now(), end: null }); });
+      },
+      onSave(form) {
+        const v = n => (form.elements[n] ? form.elements[n].value.trim() : '');
+        const r = n => fall(form, n)[0] || '';
+        const start = fromLocalInput(v('start'));
+        let out = { type, start, notes: v('notes') };
+        if (type === 'feed' && (sub === 'breast' || kind === 'nurse')) {
+          const L = Number(v('L')) || 0, R = Number(v('R')) || 0;
+          if (!L && !R) { toast('Enter minutes for at least one side'); return false; }
+          const segs = []; let at = start;
+          if (L) { segs.push({ side: 'L', from: at, to: at + L * MIN }); at += L * MIN; }
+          if (R) { segs.push({ side: 'R', from: at, to: at + R * MIN }); at += R * MIN; }
+          out = { ...out, kind: 'breast', segs, end: at };
+        } else if (type === 'feed' && sub === 'bottle') out = { ...out, kind: 'bottle', amount: v('amount'), unit: volUnit(), milk: r('milk') };
+        else if (type === 'feed') out = { ...out, kind: 'solids', food: v('food'), amount: v('amount'), reaction: r('reaction') };
+        else if (type === 'sleep') { const end = fromLocalInput(v('end')); if (end <= start) { toast('Wake-up time must be after falling asleep'); return false; } out.end = end; }
+        else if (type === 'diaper') out.kind = r('kind') || 'wet';
+        else if (type === 'pump') out = { ...out, left: v('left'), right: v('right'), unit: volUnit() };
+        else if (type === 'growth') out = { ...out, weight: v('weight'), length: v('length'), head: v('head') };
+        else if (type === 'med') out = { ...out, name: v('name'), dose: v('dose') };
+        else if (type === 'temp') out.value = v('value');
+        else out.text = v('text');
+        if (isNew) addLog(out); else updLog(entry.id, out);
+      },
+      onDelete: isNew ? null : () => { state.babyLog = blog().filter(x => x.id !== entry.id); save(); renderView(); toast('Entry deleted'); },
+    });
+  }
+
+  function babyProfileModal(b) {
+    const isNew = !b;
+    const bb = b ? { ...b } : { id: uid(), name: '', birth: '', color: '#9B6BDF' };
+    modal({
+      title: isNew ? 'Add baby' : `${esc(bb.name)}`,
+      body: `<label class="field"><span>Name</span><input name="name" value="${esc(bb.name)}" autofocus maxlength="30"></label>
+        <label class="field"><span>Birthday</span><input type="date" name="birth" value="${esc(bb.birth)}"></label>
+        <div class="field"><span>Color</span><div class="color-pick">${COLORS.map(c => `<label><input type="radio" name="color" value="${c}" ${c === bb.color ? 'checked' : ''}><span style="--c:${c}"></span></label>`).join('')}</div></div>`,
+      onSave(form) {
+        const name = fval(form, 'name');
+        if (!name) { form.elements.name.classList.add('invalid'); return false; }
+        const out = { ...bb, name, birth: fval(form, 'birth'), color: fall(form, 'color')[0] || bb.color };
+        state.babies = isNew ? [...babies(), out] : babies().map(x => (x.id === out.id ? out : x));
+        state.ui.babyId = out.id; bUI.babyId = out.id;
+        save(); renderView();
+      },
+      onDelete: isNew ? null : () => {
+        choice(`Remove ${esc(bb.name)}?`, 'This deletes the baby and every logged feed, sleep and diaper for them.', [{ label: 'Continue', cls: 'danger', fn: () => confirmTyped(`Delete ${bb.name}’s log?`, `${bb.name}’s whole log`, () => {
+          state.babies = babies().filter(x => x.id !== bb.id); state.babyLog = blog().filter(e => e.babyId !== bb.id); bUI.babyId = null; save(); renderView();
+        }) }]);
+        return false;
+      },
+    });
+  }
+
   // ---------------------------------------------------------------- render: shell
   const NAV = [
     ['calendar', 'Calendar'], ['chores', 'Chores'], ['rewards', 'Rewards'],
@@ -669,7 +978,7 @@
   function renderSidebar() {
     $('#sidebar').innerHTML = `
       <div class="logo" title="Calendora"><span></span></div>
-      ${NAV.map(([v, label]) => `<button class="nav-btn ${state.ui.view === v ? 'active' : ''}" data-action="view" data-v="${v}">${icon(v)}<span>${label}</span></button>`).join('')}
+      ${[...NAV, ...(state.settings.babyEnabled ? [['baby', 'Baby']] : [])].map(([v, label]) => `<button class="nav-btn ${state.ui.view === v ? 'active' : ''}" data-action="view" data-v="${v}">${icon(v)}<span>${label}</span></button>`).join('')}
       <div class="nav-spacer"></div>
       <button class="nav-btn" data-action="sleep" title="Start the photo frame now">${icon('sleep')}<span>Frame</span></button>
       <button class="nav-btn" data-action="fullscreen" title="Full screen">${icon('expand')}<span>Full</span></button>
@@ -750,7 +1059,8 @@
   }
   function renderView() {
     dayCache = new Map();
-    const fn = { calendar: renderCalendar, chores: renderChores, rewards: renderRewards, lists: renderLists, meals: renderMeals, photos: renderPhotos, settings: renderSettings }[state.ui.view] || renderCalendar;
+    if (state.ui.view === 'baby' && !state.settings.babyEnabled) state.ui.view = 'calendar';
+    const fn = { calendar: renderCalendar, chores: renderChores, rewards: renderRewards, lists: renderLists, meals: renderMeals, photos: renderPhotos, baby: renderBaby, settings: renderSettings }[state.ui.view] || renderCalendar;
     $('#view').className = `view view-${state.ui.view}`;
     fn();
     $('#fab').hidden = state.ui.view === 'settings';
@@ -1488,6 +1798,11 @@
         </div>
       </section>
       <section class="card">
+        <h3>Baby tracker</h3>
+        <label class="switch"><input type="checkbox" data-setting-bool="babyEnabled" ${state.settings.babyEnabled ? 'checked' : ''}><span class="track"></span><span>Show the Baby section in the menu</span></label>
+        ${state.settings.babyEnabled ? `<label class="field inline"><span>Units</span><select data-setting="babyUnits">${opt('imperial', 'oz · lb · in', s.babyUnits)}${opt('metric', 'ml · kg · cm', s.babyUnits)}</select></label>` : '<p class="muted small">Track feeds, sleep, diapers, pumping and growth. Off by default.</p>'}
+      </section>
+      <section class="card">
         <h3>Display</h3>
         <label class="field inline"><span>Week starts on</span><select data-setting="weekStart" data-num="1">${opt(0, 'Sunday', s.weekStart)}${opt(1, 'Monday', s.weekStart)}${opt(6, 'Saturday', s.weekStart)}</select></label>
         <label class="field inline"><span>Clock</span><select data-setting="use24h" data-bool="1">${opt('false', '12-hour (3:30 PM)', s.use24h)}${opt('true', '24-hour (15:30)', s.use24h)}</select></label>
@@ -1603,7 +1918,7 @@
     modal({
       title,
       body: `<p>This can’t be undone. Consider <b>Export backup</b> first.</p>
-        <label class="field"><span>Type <b>DELETE</b> to replace ${esc(what)}</span><input name="word" autocomplete="off" autocapitalize="characters" spellcheck="false" autofocus placeholder="DELETE"></label>`,
+        <label class="field"><span>Type <b>DELETE</b> to confirm (${esc(what)})</span><input name="word" autocomplete="off" autocapitalize="characters" spellcheck="false" autofocus placeholder="DELETE"></label>`,
       saveLabel: 'Yes, do it',
       onOpen(form) {
         const btn = $('button[type=submit]', form);
@@ -1989,11 +2304,12 @@
       const c = ui.cursor;
       ui.cursor = { day: () => addDays(c, dir), week: () => addDays(c, 7 * dir), schedule: () => addDays(c, 7 * dir), month: () => new Date(c.getFullYear(), c.getMonth() + dir, 1) }[state.ui.calView]();
     } else if (v === 'chores') ui.choreDate = addDays(ui.choreDate, dir);
+    else if (v === 'baby') bUI.day = addDays(bUI.day, dir);
     else if (v === 'meals') ui.mealWeek = addDays(ui.mealWeek, 7 * dir);
     else return;
     renderView();
   }
-  function goToday() { ui.cursor = today(); ui.choreDate = today(); ui.mealWeek = today(); renderView(); }
+  function goToday() { ui.cursor = today(); ui.choreDate = today(); ui.mealWeek = today(); bUI.day = today(); renderView(); }
 
   const actions = {
     view(el) { state.ui.view = el.dataset.v; save({ localOnly: true }); render(); if (el.dataset.v === 'settings') anylistLoad(); },
@@ -2009,6 +2325,19 @@
     },
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
+    'pick-baby'(el) { bUI.babyId = el.dataset.id; state.ui.babyId = el.dataset.id; save({ localOnly: true }); renderView(); },
+    'baby-edit'() { babyProfileModal(curBaby()); },
+    'baby-log'(el) {
+      const k = el.dataset.kind;
+      if (k === 'nurse' && runningFeed()) { toast('Nursing timer is running — use the buttons above'); return; }
+      if (k === 'sleep' && runningSleep()) { actions['sleep-stop'](); return; }
+      babyEntryModal(k);
+    },
+    'baby-entry'(el) { const e = blog().find(x => x.id === el.dataset.id); if (!e) return; if (isRunning(e)) { toast(e.type === 'sleep' ? 'Tap “Woke up” to stop the timer' : 'Use Left / Right / Done above'); return; } babyEntryModal(null, e); },
+    'nurse-side'(el) { nurseSide(el.dataset.side); },
+    'nurse-pause'() { nursePause(); },
+    'nurse-stop'() { nurseStop(); },
+    'sleep-stop'() { const sl = runningSleep(); if (sl) { updLog(sl.id, { end: Date.now() }); toast(`Slept ${dur(Date.now() - sl.start)}`); } },
     'move-cat'(el) {
       const l = currentList(); const it = l && l.items.find(i => i.id === el.dataset.id); if (!it) return;
       it.cat = catOf(it) === 'grocery' ? 'other' : 'grocery'; it.catBy = 'user';
@@ -2227,6 +2556,7 @@
       const f = icalFeed(t.dataset.icalMember); if (!f) return;
       f.memberId = t.value; icalRemap(); save(); toast(`${f.name} → ${t.value ? memberById(t.value).name : 'Everyone'}`); return;
     }
+    if (t.matches('[data-setting-bool]')) { state.settings[t.dataset.settingBool] = t.checked; save(); render(); if (t.dataset.settingBool === 'babyEnabled' && t.checked) toast('Baby is now in the menu'); return; }
     const el = t.closest('[data-setting]'); if (!el) return;
     let v = el.value;
     if (el.dataset.num) v = Number(v);
@@ -2270,6 +2600,7 @@
       case 'lists': return listModal();
       case 'meals': return state.ui.mealsTab === 'recipes' ? recipeAddChooser(null) : mealModal(todayStr(), 'dinner');
       case 'photos': return $('#photoInput').click();
+      case 'baby': return curBaby() ? babyEntryModal('diaper') : babyProfileModal(null);
       default: return null;
     }
   });
@@ -2299,7 +2630,7 @@
   // When the app is served by the Calendora Worker, the family board is shared through /api.
   // Anywhere else (GitHub Pages, a local file) it runs in local-only mode.
   const CLOUD_KEY = 'calendora.cloud';
-  const SHARED_KEYS = ['members', 'events', 'chores', 'choreDone', 'lists', 'meals', 'rewards', 'redemptions', 'icalFeeds', 'recipes'];
+  const SHARED_KEYS = ['members', 'events', 'chores', 'choreDone', 'lists', 'meals', 'rewards', 'redemptions', 'icalFeeds', 'recipes', 'babies', 'babyLog'];
   const cloud = { mode: 'unknown', configured: false, signedIn: false, version: 0, lastStr: '', pushing: false, again: false, offline: false, lastSync: 0, timer: null };
   try { const m = JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null'); if (m) { cloud.version = m.version || 0; cloud.lastStr = m.lastStr || ''; cloud.lastSync = m.lastSync || 0; cloud.known = true; } } catch (e) { /* ignore */ }
   const saveCloudMeta = () => { try { localStorage.setItem(CLOUD_KEY, JSON.stringify({ version: cloud.version, lastStr: cloud.lastStr, lastSync: cloud.lastSync })); } catch (e) { /* ignore */ } };
@@ -2948,7 +3279,7 @@
   // ---------------------------------------------------------------- boot
   render();
   fetchWeather();
-  setInterval(renderClock, 1000);
+  setInterval(() => { renderClock(); tickBaby(); }, 1000);
   icalRemap();
   if (openRecipeId() && recipeById(openRecipeId())) openRecipe(openRecipeId());
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && recipeOpen()) keepAwake(true); });
