@@ -2625,7 +2625,7 @@
       <label class="switch"><input type="checkbox" data-anylist="on" ${cfg.on ? 'checked' : ''} ${info && info.configured ? '' : 'disabled'}><span class="track"></span><span>Sync with AnyList</span></label>
       <div class="row">
         <label class="field"><span>AnyList list name</span><input data-anylist="listName" value="${esc(cfg.listName || 'Groceries')}" maxlength="60" placeholder="Groceries"></label>
-        <label class="field"><span>Calendora list</span><select data-anylist="listId">${lists.map(l => `<option value="${l.id}" ${target && target.id === l.id ? 'selected' : ''}>${esc(l.emoji || '')} ${esc(l.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Calendora list</span><select data-anylist="listId">${target ? '' : '<option value="" selected>Create one automatically</option>'}${lists.map(l => `<option value="${l.id}" ${target && target.id === l.id ? 'selected' : ''}>${esc(l.emoji || '')} ${esc(l.name)}</option>`).join('')}</select></label>
       </div>
       ${info && info.configured ? '' : `<details class="howto" open><summary>Connect your AnyList account</summary>
         <ol>
