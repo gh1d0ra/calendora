@@ -551,3 +551,6 @@ form:not(.is-allday) .only-timed, form.is-allday .only-allday, form.is-repeat .o
   .rv-side, .rv-main { overflow: visible; border-right: 0; }
   .add-choices { grid-template-columns: 1fr; }
 }
+.g-account { border: 1.5px solid var(--line); border-radius: 16px; padding: 12px 14px 4px; margin: 12px 0; }
+.g-acct-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.g-acct-head b { font-weight: 900; overflow-wrap: anywhere; }
