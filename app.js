@@ -95,7 +95,7 @@
       hidden: [], gEvents: [], gSyncedAt: null,
       settings: {
         weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true,
-        google: { clientId: '', connected: false, email: '', calendars: {}, defaultCal: '' },
+        google: { clientId: '', connected: false, accounts: [], calendars: {}, defaultCal: '' },
       },
       ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan' },
     };
@@ -339,20 +339,45 @@
     return new Promise(res => c.toBlob(res, 'image/jpeg', quality));
   }
 
-  // ---------------------------------------------------------------- Google Calendar sync
-  // Runs fully in the browser: Google Identity Services gives a short-lived access token,
+  // ---------------------------------------------------------------- Google Calendar sync (several accounts)
+  // Runs fully in the browser: Google Identity Services gives a short-lived access token per account,
   // and the Calendar REST API is called with fetch. No server, no refresh tokens.
+  // Calendars are keyed "account|calendarId" so the same calendar can come from two accounts.
   const GOOGLE_CLIENT_ID = '639692840591-5n38eqpu4b4ldic333i7668ijuceb1iv.apps.googleusercontent.com';
   const G_SCOPE = 'https://www.googleapis.com/auth/calendar';
   const G_API = 'https://www.googleapis.com/calendar/v3';
-  const G_TOKEN_KEY = 'calendora.gtoken';
-  const g = { tokenClient: null, tokenClientId: '', token: null, exp: 0, loading: null, syncing: false, error: '', pending: null };
-  try { const t = JSON.parse(localStorage.getItem(G_TOKEN_KEY) || 'null'); if (t && t.exp > Date.now() + 60000) { g.token = t.t; g.exp = t.exp; } } catch (e) { /* ignore */ }
+  const G_TOKEN_KEY = 'calendora.gtokens';
+  const g = { tokenClient: null, tokenClientId: '', tokens: {}, loading: null, syncing: false, error: '', pending: null };
   const gCfg = () => state.settings.google;
   const gClientId = () => (gCfg().clientId || GOOGLE_CLIENT_ID || '').trim();
-  const gHasToken = () => !!g.token && g.exp > Date.now() + 30000;
+  const gAccounts = () => (Array.isArray(gCfg().accounts) ? gCfg().accounts : []);
+  const gHasToken = acct => { const t = g.tokens[acct]; return !!t && t.exp > Date.now() + 30000; };
+  const gExpired = () => gAccounts().filter(a => !gHasToken(a));
   const gWritable = c => c && (c.role === 'owner' || c.role === 'writer');
+  const gKey = (acct, calId) => `${acct}|${calId}`;
   const enc = encodeURIComponent;
+  const saveTokens = () => { try { localStorage.setItem(G_TOKEN_KEY, JSON.stringify(g.tokens)); } catch (e) { /* ignore */ } };
+
+  // Load tokens, and move a single-account setup from earlier versions to the multi-account layout.
+  (function gMigrate() {
+    try { g.tokens = JSON.parse(localStorage.getItem(G_TOKEN_KEY) || '{}') || {}; } catch (e) { g.tokens = {}; }
+    const G = gCfg();
+    if (!Array.isArray(G.accounts)) G.accounts = [];
+    if (!G.accounts.length && G.email) {
+      {
+        const acct = G.email;
+        G.accounts = [acct];
+        const cals = {};
+        Object.entries(G.calendars || {}).forEach(([id, c]) => { cals[id.includes('|') ? id : gKey(acct, id)] = { ...c, acct, calId: id.includes('|') ? c.calId : id }; });
+        G.calendars = cals;
+        if (G.defaultCal && !G.defaultCal.includes('|')) G.defaultCal = gKey(acct, G.defaultCal);
+        (state.gEvents || []).forEach(e => { if (!e.gacct) { e.gacct = acct; e.gcalId = e.gcal; e.gcal = gKey(acct, e.gcal); } });
+        try { const old = JSON.parse(localStorage.getItem('calendora.gtoken') || 'null'); if (old && old.t) { g.tokens[acct] = { t: old.t, exp: old.exp }; saveTokens(); } } catch (e) { /* ignore */ }
+      }
+      try { localStorage.removeItem('calendora.gtoken'); } catch (e) { /* ignore */ }
+    }
+    G.connected = G.accounts.length > 0;
+  })();
 
   function gLoadScript() {
     if (window.google && window.google.accounts && window.google.accounts.oauth2) return Promise.resolve();
@@ -376,10 +401,7 @@
       callback: resp => {
         const p = g.pending; g.pending = null;
         if (resp.error) { if (p) p.rej(new Error(resp.error_description || resp.error)); return; }
-        g.token = resp.access_token;
-        g.exp = Date.now() + (Number(resp.expires_in) || 3600) * 1000;
-        try { localStorage.setItem(G_TOKEN_KEY, JSON.stringify({ t: g.token, exp: g.exp })); } catch (e) { /* ignore */ }
-        if (p) p.res(g.token);
+        if (p) p.res({ t: resp.access_token, exp: Date.now() + (Number(resp.expires_in) || 3600) * 1000 });
       },
       error_callback: err => {
         const p = g.pending; g.pending = null;
@@ -388,23 +410,42 @@
       },
     });
   }
-  // Call from a click so the browser allows the Google pop-up.
-  async function gRequestToken() {
+  // Ask Google for a token. acct = an existing account to refresh, or null to pick/add an account.
+  // Must be started from a click so the browser allows the pop-up.
+  async function gRequestToken(acct) {
     if (!gClientId()) throw new Error('Add your Google Client ID first');
     await gInitClient();
     return new Promise((res, rej) => {
       g.pending = { res, rej };
-      g.tokenClient.requestAccessToken({ prompt: gCfg().connected ? '' : 'consent', login_hint: gCfg().email || undefined });
+      g.tokenClient.requestAccessToken(acct ? { prompt: '', login_hint: acct } : { prompt: 'select_account consent' });
     });
   }
-  async function gFetch(path, opts = {}) {
-    if (!gHasToken()) throw Object.assign(new Error('Google needs you to reconnect'), { auth: true });
-    const headers = { Authorization: `Bearer ${g.token}` };
+  // Find out which Google account a token belongs to (its primary calendar id is the account's email).
+  async function gWhoAmI(tok) {
+    const r = await fetch(`${G_API}/users/me/calendarList/primary`, { headers: { Authorization: `Bearer ${tok.t}` } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.id) throw new Error('Could not read that Google account');
+    return j.id;
+  }
+  async function gSignIn(acct) {
+    const tok = await gRequestToken(acct || null);
+    const who = await gWhoAmI(tok);
+    g.tokens[who] = tok;
+    saveTokens();
+    if (!gAccounts().includes(who)) gCfg().accounts = [...gAccounts(), who];
+    gCfg().connected = true;
+    save({ localOnly: true });
+    return who;
+  }
+
+  async function gFetch(acct, path, opts = {}) {
+    if (!gHasToken(acct)) throw Object.assign(new Error(`${acct} needs to reconnect`), { auth: true });
+    const headers = { Authorization: `Bearer ${g.tokens[acct].t}` };
     if (opts.body) headers['Content-Type'] = 'application/json';
     const r = await fetch(G_API + path, { ...opts, headers });
     if (r.status === 401) {
-      g.token = null; localStorage.removeItem(G_TOKEN_KEY); renderSyncPill();
-      throw Object.assign(new Error('Google needs you to reconnect'), { auth: true });
+      delete g.tokens[acct]; saveTokens(); renderSyncPill();
+      throw Object.assign(new Error(`${acct} needs to reconnect`), { auth: true });
     }
     if (r.status === 204 || r.status === 410) return null;
     const j = await r.json().catch(() => ({}));
@@ -413,11 +454,11 @@
   }
   const htmlToText = s => (s ? (new DOMParser().parseFromString(s.replace(/<br\s*\/?>/gi, '\n'), 'text/html').body.textContent || '') : '');
 
-  function gToLocal(ev, calId) {
+  function gToLocal(ev, key) {
     if (!ev || ev.status === 'cancelled' || !ev.start) return null;
-    const c = gCfg().calendars[calId] || {};
+    const c = gCfg().calendars[key] || {};
     const base = {
-      id: `g_${calId}_${ev.id}`, source: 'google', gcal: calId, gid: ev.id, gseries: ev.recurringEventId || null,
+      id: `g_${key}_${ev.id}`, source: 'google', gcal: key, gacct: c.acct, gcalId: c.calId, gid: ev.id, gseries: ev.recurringEventId || null,
       title: ev.summary || '(No title)', location: ev.location || '', notes: htmlToText(ev.description),
       recur: 'none', recurDays: [], exdates: [], until: null,
       memberIds: c.memberId ? [c.memberId] : [], readOnly: !gWritable(c) || !!ev.locked,
@@ -457,106 +498,132 @@
   }
   function gRemap() {
     const cals = gCfg().calendars;
-    state.gEvents.forEach(e => { const c = cals[e.gcal]; e.memberIds = c && c.memberId ? [c.memberId] : []; e.readOnly = !gWritable(c); });
+    (state.gEvents || []).forEach(e => { const c = cals[e.gcal]; e.memberIds = c && c.memberId ? [c.memberId] : []; e.readOnly = !gWritable(c); });
   }
   function gVisible() {
     const cals = gCfg().calendars;
-    return state.gEvents.filter(e => { const c = cals[e.gcal]; return !c || c.on !== false; });
+    return state.gEvents.filter(e => { const c = cals[e.gcal]; return c && c.on !== false; });
   }
   const allEvents = () => {
     const ge = state.gEvents && state.gEvents.length ? gVisible() : [];
     return ge.length || ical.flat.length ? state.events.concat(ge, ical.flat) : state.events;
   };
 
-  async function gSync({ quiet = false } = {}) {
-    if (g.syncing || !gCfg().connected) return;
-    if (!gHasToken()) { renderSyncPill(); return; }
-    g.syncing = true; g.error = ''; renderSyncPill();
-    try {
-      const list = await gFetch('/users/me/calendarList?maxResults=250');
-      const prevCals = gCfg().calendars, cals = {};
-      (list.items || []).forEach(c => {
-        if (c.primary) gCfg().email = c.id;
-        const prev = prevCals[c.id];
-        cals[c.id] = {
-          name: c.summaryOverride || c.summary || c.id, color: c.backgroundColor || '#8E8AA0', role: c.accessRole, primary: !!c.primary,
-          on: prev ? prev.on : !c.hidden && c.selected !== false, memberId: prev ? prev.memberId : '',
-        };
-      });
-      gCfg().calendars = cals;
-      const tMin = addDays(today(), -62).toISOString(), tMax = addDays(today(), 400).toISOString();
-      const out = [];
-      for (const [id, c] of Object.entries(cals)) {
-        if (!c.on) continue;
-        let pageToken = '';
-        do {
-          const q = new URLSearchParams({ singleEvents: 'true', orderBy: 'startTime', maxResults: '2500', timeMin: tMin, timeMax: tMax });
-          if (pageToken) q.set('pageToken', pageToken);
-          const j = await gFetch(`/calendars/${enc(id)}/events?${q}`);
-          (j.items || []).forEach(ev => { const m = gToLocal(ev, id); if (m) out.push(m); });
-          pageToken = j.nextPageToken || '';
-        } while (pageToken);
-      }
-      state.gEvents = out;
-      state.gSyncedAt = Date.now();
-      save();
-      renderView();
-      if (!quiet) toast(`Synced ${out.length} Google event${out.length === 1 ? '' : 's'}`);
-    } catch (e) {
-      g.error = e.message;
-      if (!quiet) toast(e.message);
-    } finally {
-      g.syncing = false;
-      renderSyncPill();
+  async function gSyncAccount(acct, out) {
+    const list = await gFetch(acct, '/users/me/calendarList?maxResults=250');
+    const prev = gCfg().calendars;
+    Object.keys(prev).forEach(k => { if (prev[k].acct === acct) delete prev[k]; });
+    const fresh = {};
+    (list.items || []).forEach(c => {
+      const key = gKey(acct, c.id);
+      fresh[key] = {
+        acct, calId: c.id, name: c.summaryOverride || c.summary || c.id, color: c.backgroundColor || '#8E8AA0', role: c.accessRole, primary: !!c.primary,
+        on: g.prevCals[key] ? g.prevCals[key].on : !c.hidden && c.selected !== false, memberId: g.prevCals[key] ? g.prevCals[key].memberId : '',
+      };
+    });
+    Object.assign(gCfg().calendars, fresh);
+    const tMin = addDays(today(), -62).toISOString(), tMax = addDays(today(), 400).toISOString();
+    for (const [key, c] of Object.entries(fresh)) {
+      if (!c.on) continue;
+      let pageToken = '';
+      do {
+        const q = new URLSearchParams({ singleEvents: 'true', orderBy: 'startTime', maxResults: '2500', timeMin: tMin, timeMax: tMax });
+        if (pageToken) q.set('pageToken', pageToken);
+        const j = await gFetch(acct, `/calendars/${enc(c.calId)}/events?${q}`);
+        (j.items || []).forEach(ev => { const m = gToLocal(ev, key); if (m) out.push(m); });
+        pageToken = j.nextPageToken || '';
+      } while (pageToken);
     }
   }
-  async function gEnsureToken() { if (!gHasToken()) await gRequestToken(); }
-  async function gCreate(e, calId) {
-    await gEnsureToken();
+  async function gSync({ quiet = false } = {}) {
+    if (g.syncing || !gAccounts().length) return;
+    const ready = gAccounts().filter(gHasToken);
+    if (!ready.length) { renderSyncPill(); return; }
+    g.syncing = true; g.error = ''; renderSyncPill();
+    g.prevCals = { ...gCfg().calendars };
+    // keep the last copy of accounts we can't reach right now
+    const out = (state.gEvents || []).filter(e => !ready.includes(e.gacct) && gAccounts().includes(e.gacct));
+    let n = 0;
+    const problems = [];
+    for (const acct of ready) {
+      const before = out.length;
+      try { await gSyncAccount(acct, out); n += out.length - before; }
+      catch (e) {
+        problems.push(e.message);
+        out.push(...(state.gEvents || []).filter(x => x.gacct === acct)); // keep its old events
+      }
+    }
+    state.gEvents = out;
+    state.gSyncedAt = Date.now();
+    g.error = problems.join(' · ');
+    g.syncing = false;
+    save({ localOnly: true });
+    renderView();
+    renderSyncPill();
+    if (!quiet) toast(problems.length ? problems[0] : `Synced ${n} Google event${n === 1 ? '' : 's'}`);
+  }
+  const calOf = key => gCfg().calendars[key];
+  async function gEnsureToken(acct) { if (!gHasToken(acct)) { const who = await gSignIn(acct); if (who !== acct) throw new Error(`Please sign in as ${acct}`); } }
+  async function gCreate(e, key) {
+    const c = calOf(key); if (!c) throw new Error('That calendar is no longer connected');
+    await gEnsureToken(c.acct);
     const body = localToG(e);
     const rr = toRRule(e);
     if (rr) body.recurrence = rr;
-    const j = await gFetch(`/calendars/${enc(calId)}/events`, { method: 'POST', body: JSON.stringify(body) });
+    const j = await gFetch(c.acct, `/calendars/${enc(c.calId)}/events`, { method: 'POST', body: JSON.stringify(body) });
     if (rr) await gSync({ quiet: true });
-    else { const m = gToLocal(j, calId); if (m) state.gEvents.push(m); save(); renderView(); }
+    else { const m = gToLocal(j, key); if (m) state.gEvents.push(m); save({ localOnly: true }); renderView(); }
   }
   async function gUpdate(e) {
-    await gEnsureToken();
-    const j = await gFetch(`/calendars/${enc(e.gcal)}/events/${enc(e.gid)}`, { method: 'PATCH', body: JSON.stringify(localToG(e)) });
+    const c = calOf(e.gcal); if (!c) throw new Error('That calendar is no longer connected');
+    await gEnsureToken(c.acct);
+    const j = await gFetch(c.acct, `/calendars/${enc(c.calId)}/events/${enc(e.gid)}`, { method: 'PATCH', body: JSON.stringify(localToG(e)) });
     const m = gToLocal(j, e.gcal);
     state.gEvents = state.gEvents.map(x => (x.id === e.id ? m : x)).filter(Boolean);
-    save(); renderView();
+    save({ localOnly: true }); renderView();
   }
   async function gDelete(e, series) {
-    await gEnsureToken();
+    const c = calOf(e.gcal); if (!c) throw new Error('That calendar is no longer connected');
+    await gEnsureToken(c.acct);
     const target = series && e.gseries ? e.gseries : e.gid;
-    await gFetch(`/calendars/${enc(e.gcal)}/events/${enc(target)}`, { method: 'DELETE' });
+    await gFetch(c.acct, `/calendars/${enc(c.calId)}/events/${enc(target)}`, { method: 'DELETE' });
     state.gEvents = state.gEvents.filter(x => !(x.gcal === e.gcal && (series && e.gseries ? x.gseries === e.gseries || x.gid === e.gseries : x.id === e.id)));
-    save(); renderView();
+    save({ localOnly: true }); renderView();
   }
   async function gConnect() {
     const inp = $('[data-g-client]');
-    if (inp) gCfg().clientId = inp.value.trim();
+    if (inp && inp.value.trim()) gCfg().clientId = inp.value.trim();
     if (!/\.apps\.googleusercontent\.com$/.test(gClientId())) { toast('That doesn’t look like a Google Client ID'); return; }
-    save();
     try {
-      await gRequestToken();
-      gCfg().connected = true;
-      save();
-      await gSync();
+      const who = await gSignIn(null);
+      toast(`Connected ${who}`);
+      await gSync({ quiet: true });
       render();
     } catch (e) { toast(e.message); }
   }
-  async function gReconnect() {
-    try { await gRequestToken(); renderSyncPill(); await gSync({ quiet: true }); toast('Google reconnected'); }
-    catch (e) { toast(e.message); }
+  async function gReconnect(acct) {
+    const target = acct || gExpired()[0];
+    if (!target) { gSync(); return; }
+    try {
+      const who = await gSignIn(target);
+      if (who !== target) toast(`That was ${who} — added it as another account`);
+      else toast(`${who} reconnected`);
+      renderSyncPill();
+      await gSync({ quiet: true });
+      if (state.ui.view === 'settings') renderView();
+    } catch (e) { toast(e.message); }
   }
-  function gDisconnect() {
-    try { if (g.token && window.google && window.google.accounts) window.google.accounts.oauth2.revoke(g.token, () => {}); } catch (e) { /* ignore */ }
-    g.token = null; g.exp = 0; localStorage.removeItem(G_TOKEN_KEY);
-    Object.assign(gCfg(), { connected: false, email: '', calendars: {}, defaultCal: '' });
-    state.gEvents = []; state.gSyncedAt = null;
-    save(); render(); toast('Google Calendar disconnected');
+  function gDisconnect(acct) {
+    const t = g.tokens[acct];
+    try { if (t && window.google && window.google.accounts) window.google.accounts.oauth2.revoke(t.t, () => {}); } catch (e) { /* ignore */ }
+    delete g.tokens[acct]; saveTokens();
+    const G = gCfg();
+    G.accounts = gAccounts().filter(a => a !== acct);
+    Object.keys(G.calendars).forEach(k => { if (G.calendars[k].acct === acct) delete G.calendars[k]; });
+    if (G.defaultCal && !G.calendars[G.defaultCal]) G.defaultCal = '';
+    G.connected = G.accounts.length > 0;
+    state.gEvents = (state.gEvents || []).filter(e => e.gacct !== acct);
+    save({ localOnly: true }); render(); toast(`${acct} disconnected`);
   }
   function gDefaultCalFor(memberIds) {
     const cals = gCfg().calendars;
@@ -577,10 +644,17 @@
   function renderSyncPill() {
     const el = $('#syncPill');
     if (!el) return;
-    if (!gCfg().connected) { el.hidden = true; return; }
+    if (!gAccounts().length) { el.hidden = true; return; }
     el.hidden = false;
+    const expired = gExpired();
     if (g.syncing) { el.className = 'sync-pill busy'; el.innerHTML = '<span class="gmark">G</span> Syncing…'; el.dataset.action = 'noop'; return; }
-    if (!gHasToken()) { el.className = 'sync-pill warn'; el.innerHTML = '<span class="gmark">G</span> Reconnect Google'; el.dataset.action = 'g-reconnect'; return; }
+    if (expired.length) {
+      el.className = 'sync-pill warn';
+      el.innerHTML = `<span class="gmark">G</span> Reconnect ${expired.length > 1 ? `${expired.length} Google accounts` : 'Google'}`;
+      el.dataset.action = 'g-reconnect'; el.removeAttribute('data-acct');
+      el.title = `Tap to reconnect ${expired[0]}`;
+      return;
+    }
     el.className = `sync-pill ${g.error ? 'warn' : 'ok'}`;
     el.innerHTML = `<span class="gmark">G</span> ${g.error ? 'Sync problem — retry' : state.gSyncedAt ? `Synced ${timeAgo(state.gSyncedAt)}` : 'Sync now'}`;
     el.dataset.action = 'g-sync';
@@ -1347,36 +1421,40 @@
   }
 
   function googleSection() {
-    const G = gCfg();
-    let h = `<section class="card"><div class="sec-head"><h3>Google Calendar</h3>${G.connected ? `<span class="status-pill ${gHasToken() ? 'ok' : 'warn'}">${gHasToken() ? 'Connected' : 'Needs reconnect'}</span>` : ''}</div>`;
-    if (!G.connected) {
-      h += `<p class="muted">Two-way sync: your Google calendars show up here, and events you add here can be saved to Google — so they appear on everyone’s phones.</p>
-        <label class="field"><span>Google OAuth Client ID</span><input data-g-client value="${esc(gClientId())}" placeholder="1234567890-abc….apps.googleusercontent.com" autocomplete="off" spellcheck="false"></label>
+    const accts = gAccounts();
+    const memberOpts = sel => `<option value="">Everyone</option>${state.members.map(m => `<option value="${m.id}" ${sel === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}`;
+    let h = `<section class="card"><div class="sec-head"><h3>Google Calendar</h3>${accts.length ? `<div class="row wrap"><button class="btn" data-action="g-sync">Sync now</button><button class="btn primary" data-action="g-add">${icon('plus')} Add Google account</button></div>` : ''}</div>`;
+    if (!accts.length) {
+      h += `<p class="muted">Two-way sync: your Google calendars show up here, and events you add here can be saved to Google — so they appear on everyone’s phones. You can connect several Google accounts.</p>
         <button class="btn primary" data-action="g-connect"><span class="gmark">G</span> Connect Google Calendar</button>`;
-    } else {
-      const cals = Object.entries(G.calendars);
-      const writable = cals.filter(([, c]) => gWritable(c));
-      h += `<p class="muted">Signed in as <b>${esc(G.email || 'your Google account')}</b>${state.gSyncedAt ? ` · synced ${timeAgo(state.gSyncedAt)}` : ''}. Changes made in Google show up here within a few minutes.</p>
-        <div class="row wrap">
-          ${gHasToken() ? '<button class="btn" data-action="g-sync">Sync now</button>' : '<button class="btn primary" data-action="g-reconnect">Reconnect</button>'}
-          <button class="btn ghost" data-action="g-disconnect">Disconnect</button>
-        </div>
-        <h4>Calendars <small class="muted">— tick to show, and pick whose calendar it is</small></h4>
-        <div class="gcal-list">${cals.map(([id, c]) => `
-          <div class="gcal-row">
-            <label class="gcal-on"><input type="checkbox" data-gcal-on="${esc(id)}" ${c.on ? 'checked' : ''}><span class="gdot" style="--c:${c.color}"></span>
-              <span class="gname">${esc(c.name)}${c.primary ? ' <small class="muted">primary</small>' : ''}${gWritable(c) ? '' : ' <small class="muted">read-only</small>'}</span></label>
-            <select data-gcal-member="${esc(id)}"><option value="">Everyone</option>${state.members.map(m => `<option value="${m.id}" ${c.memberId === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>
-          </div>`).join('') || '<div class="empty-sm">No calendars yet — press Sync now.</div>'}
-        </div>
-        <label class="field inline"><span>New events go to</span><select data-g-default>
-          <option value="">Calendora only (this device)</option>
-          ${writable.map(([id, c]) => `<option value="${esc(id)}" ${G.defaultCal === id ? 'selected' : ''}>Google · ${esc(c.name)}</option>`).join('')}
-        </select></label>
-        <p class="muted small">Tip: when someone is assigned a Google calendar above, new events for just that person are saved to it automatically.</p>`;
+      return h + '</section>';
     }
+    h += `<p class="muted">${state.gSyncedAt ? `Synced ${timeAgo(state.gSyncedAt)}. ` : ''}Each account stays signed in for about an hour at a time on this device — tap Reconnect when asked.</p>`;
+    accts.forEach(acct => {
+      const ok = gHasToken(acct);
+      const cals = Object.entries(gCfg().calendars).filter(([, c]) => c.acct === acct);
+      h += `<div class="g-account">
+        <div class="g-acct-head"><span class="gmark">G</span><b>${esc(acct)}</b>
+          <span class="status-pill ${ok ? 'ok' : 'warn'}">${ok ? 'Connected' : 'Needs reconnect'}</span><span class="spacer"></span>
+          ${ok ? '' : `<button class="btn primary small" data-action="g-reconnect" data-acct="${esc(acct)}">Reconnect</button>`}
+          <button class="btn ghost small" data-action="g-disconnect" data-acct="${esc(acct)}">Remove</button></div>
+        <div class="gcal-list">${cals.map(([key, c]) => `
+          <div class="gcal-row">
+            <label class="gcal-on"><input type="checkbox" data-gcal-on="${esc(key)}" ${c.on ? 'checked' : ''}><span class="gdot" style="--c:${c.color}"></span>
+              <span class="gname">${esc(c.name)}${c.primary ? ' <small class="muted">primary</small>' : ''}${gWritable(c) ? '' : ' <small class="muted">read-only</small>'}</span></label>
+            <select data-gcal-member="${esc(key)}">${memberOpts(c.memberId)}</select>
+          </div>`).join('') || `<div class="empty-sm">${ok ? 'No calendars yet — press Sync now.' : 'Reconnect to load this account’s calendars.'}</div>`}
+        </div></div>`;
+    });
+    const writable = Object.entries(gCfg().calendars).filter(([, c]) => gWritable(c));
+    h += `<label class="field inline"><span>New events go to</span><select data-g-default>
+        <option value="">Calendora only (this device)</option>
+        ${writable.map(([key, c]) => `<option value="${esc(key)}" ${gCfg().defaultCal === key ? 'selected' : ''}>${esc(c.name)} · ${esc(c.acct)}</option>`).join('')}
+      </select></label>
+      <p class="muted small">Tip: when someone is assigned a Google calendar above, new events for just that person are saved to it automatically.</p>`;
     return h + '</section>';
   }
+
 
   // ---------------------------------------------------------------- modals
   const modalRoot = $('#modalRoot');
@@ -1461,10 +1539,11 @@
     const afeed = isApple ? icalFeed(e.feed) : null;
     const srcLabel = isApple ? `Apple · ${esc(afeed ? afeed.name : 'Calendar')}` : `Google · ${esc(gcal ? gcal.name : 'Calendar')}`;
     const srcColor = isApple ? (afeed && afeed.color) || '#8E8AA0' : gcal ? gcal.color : '#8E8AA0';
-    const writableCals = gCfg().connected ? Object.entries(gCfg().calendars).filter(([, c]) => c.on && gWritable(c)) : [];
+    const writableCals = gAccounts().length ? Object.entries(gCfg().calendars).filter(([, c]) => c.on && gWritable(c)) : [];
+    const multi = gAccounts().length > 1;
     const calPicker = isNew && writableCals.length ? `<label class="field"><span>Save to</span><select name="gcal">
         <option value="local">Calendora only (this device)</option>
-        ${writableCals.map(([id, c]) => `<option value="${esc(id)}">Google · ${esc(c.name)}</option>`).join('')}</select></label>` : '';
+        ${writableCals.map(([key, c]) => `<option value="${esc(key)}">Google · ${esc(c.name)}${multi ? ` (${esc(c.acct)})` : ''}</option>`).join('')}</select></label>` : '';
     const whoBlock = isG
       ? `<div class="gsource"><span class="gdot" style="--c:${srcColor}"></span>${srcLabel}${ro ? ` <span class="muted">(read-only${isApple ? ' — edit it on the iPhone' : ''})</span>` : ''}</div>`
       : `<div class="field"><span>Who’s going?</span>${memberPicker(e.memberIds)}<small class="muted">Leave empty for the whole family.</small></div>`;
@@ -1856,9 +1935,10 @@
       }]);
     },
     'g-connect'() { gConnect(); },
-    'g-reconnect'() { gReconnect(); },
-    'g-sync'() { if (!gHasToken()) gReconnect(); else gSync(); },
-    'g-disconnect'() { choice('Disconnect Google Calendar?', 'Google events will be removed from this screen. Nothing is deleted from Google.', [{ label: 'Disconnect', cls: 'danger', fn: gDisconnect }]); },
+    'g-add'() { gConnect(); },
+    'g-reconnect'(el) { gReconnect(el.dataset.acct || null); },
+    'g-sync'() { if (!gAccounts().some(gHasToken)) gReconnect(); else gSync(); },
+    'g-disconnect'(el) { const acct = el.dataset.acct; choice(`Remove ${esc(acct)}?`, 'Its events will be removed from this screen. Nothing is deleted from Google.', [{ label: 'Remove', cls: 'danger', fn: () => gDisconnect(acct) }]); },
     'new-event'(el) { eventModal(null, null, { date: el.dataset.date }); },
     'new-event-at'(el, evt) {
       const rect = el.getBoundingClientRect();
@@ -2752,14 +2832,12 @@
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Date.now() - ical.lastFetch > 15 * 60 * 1000) icalRefresh(); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') cloudPull(); });
   addEventListener('online', () => { if (cloud.mode === 'server') { cloud.offline = false; cloudPull(); } });
-  if (gCfg().connected) {
-    gLoadScript().catch(() => {});
-    gSync({ quiet: true });
-  } else if (gClientId()) gLoadScript().catch(() => {});
+  gLoadScript().catch(() => {});
+  if (gAccounts().length) gSync({ quiet: true });
   // keep Google in step: every 5 minutes, and whenever the tab comes back into view
-  setInterval(() => { if (gCfg().connected && gHasToken()) gSync({ quiet: true }); else renderSyncPill(); }, 5 * 60 * 1000);
+  setInterval(() => { if (gAccounts().some(gHasToken)) gSync({ quiet: true }); else renderSyncPill(); }, 5 * 60 * 1000);
   setInterval(renderSyncPill, 60 * 1000);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && gCfg().connected && gHasToken() && Date.now() - (state.gSyncedAt || 0) > 60000) gSync({ quiet: true });
+    if (document.visibilityState === 'visible' && gAccounts().some(gHasToken) && Date.now() - (state.gSyncedAt || 0) > 60000) gSync({ quiet: true });
   });
 })();
