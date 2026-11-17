@@ -443,3 +443,24 @@ form:not(.is-allday) .only-timed, form.is-allday .only-allday, form.is-repeat .o
   .field.inline > span:first-child { min-width: 0; width: 100%; }
   .dname span:last-child { display: none; }
 }
+
+/* ------------------------------------------------ Google sync */
+.gmark { width: 20px; height: 20px; border-radius: 6px; background: conic-gradient(from -45deg, #EA4335 0 25%, #FBBC05 0 50%, #34A853 0 75%, #4285F4 0); color: #fff; font-weight: 900; font-size: 12px; display: inline-grid; place-items: center; flex: none; }
+.sync-pill { border: 0; display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px 8px 8px; border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); font-weight: 800; font-size: 13.5px; color: var(--ink-2); white-space: nowrap; }
+.sync-pill.warn { background: #FFF1E0; color: #B5651D; }
+.sync-pill.busy .gmark { animation: spin 1.2s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.status-pill { font-size: 12.5px; font-weight: 900; padding: 4px 12px; border-radius: 999px; }
+.status-pill.ok { background: #E6F5EC; color: #2E8A57; }
+.status-pill.warn { background: #FFF1E0; color: #B5651D; }
+.settings h4 { margin: 18px 0 8px; font-size: 15px; font-weight: 900; }
+.gcal-list { display: flex; flex-direction: column; margin-bottom: 14px; }
+.gcal-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.gcal-row:first-child { border-top: 0; }
+.gcal-on { flex: 1; display: flex; align-items: center; gap: 10px; cursor: pointer; min-width: 0; }
+.gcal-on input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+.gname { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gcal-row select { width: 160px !important; flex: none; }
+.gdot { --c: #999; width: 14px; height: 14px; border-radius: 50%; background: var(--c); flex: none; display: inline-block; }
+.gsource { display: flex; align-items: center; gap: 8px; font-weight: 800; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--surface-2); margin-bottom: 14px; }
+@media (max-width: 760px) { .sync-pill { padding: 6px; } .sync-pill { font-size: 0; gap: 0; } .sync-pill .gmark { font-size: 12px; } }
