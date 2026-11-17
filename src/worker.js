@@ -255,6 +255,7 @@ function alDecodeItem(buf) {
   pbFields(buf, {
     1: b => { it.id = td8.decode(b); }, 3: b => { it.listId = td8.decode(b); }, 4: b => { it.name = td8.decode(b); },
     5: b => { it.details = td8.decode(b); }, 6: v => { it.checked = !!v; },
+    11: b => { it.category = td8.decode(b); }, 13: b => { it.categoryMatchId = td8.decode(b); },
     18: b => { if (!it.quantity) it.quantity = td8.decode(b); }, 21: b => pbFields(b, { 1: x => { it.quantity = td8.decode(x); } }),
   });
   return it;
@@ -370,9 +371,10 @@ async function anylistSyncOnce(db, env, board, version, cfg) {
   const wantName = String(cfg.listName || 'Groceries').trim().toLowerCase();
   const al = alists.find(l => (l.name || '').trim().toLowerCase() === wantName);
   if (!al) throw new ALError(`No AnyList list called “${cfg.listName || 'Groceries'}”. Your lists: ${alists.map(l => l.name).join(', ') || 'none'}`);
-  let cl = lists.find(l => l.id === cfg.listId) || lists.find(l => /grocer/i.test(l.name || '')) || lists.find(l => (l.name || '').trim().toLowerCase() === (al.name || '').trim().toLowerCase());
+  const shopId = board.settings && board.settings.shoppingListId;
+  let cl = lists.find(l => l.id === cfg.listId) || lists.find(l => l.id === shopId) || lists.find(l => /grocer|need to buy|shopping/i.test(l.name || '')) || lists.find(l => (l.name || '').trim().toLowerCase() === (al.name || '').trim().toLowerCase());
   let created = false;
-  if (!cl) { cl = { id: `l${alId().slice(0, 12)}`, name: al.name || 'Groceries', emoji: '🛒', items: [] }; lists.unshift(cl); created = true; }
+  if (!cl) { cl = { id: `l${alId().slice(0, 12)}`, name: 'Need to Buy', emoji: '🛒', items: [], split: true }; lists.unshift(cl); created = true; }
   cl.items = Array.isArray(cl.items) ? cl.items : [];
 
   let map = null;
@@ -392,6 +394,8 @@ async function anylistSyncOnce(db, env, board, version, cfg) {
     if (!a) { cl.items = cl.items.filter(x => x.id !== c.id); changed = true; pulled++; continue; }
     let name = L.name, checked = L.checked;
     const cName = String(c.text || ''), cChk = !!c.done;
+    const alCat = a.categoryMatchId || a.category || '';
+    if (alCat && c.alCat !== alCat) { c.alCat = alCat; changed = true; }
     if (a.name !== L.name) { name = a.name; if (cName !== a.name) { c.text = a.name; changed = true; pulled++; } }
     else if (cName !== L.name) { name = cName; ops.push({ handler: 'set-list-item-name', listId: al.id, itemId: a.id, value: cName }); }
     if (a.checked !== L.checked) { checked = a.checked; if (cChk !== a.checked) { c.done = a.checked; changed = true; pulled++; } }
@@ -425,7 +429,8 @@ async function anylistSyncOnce(db, env, board, version, cfg) {
     if (a.checked) { ignored.add(a.id); continue; }
     ignored.delete(a.id);
     const id = `al${alId().slice(0, 12)}`;
-    cl.items.unshift({ id, text: a.name, done: false });
+    const alCat = a.categoryMatchId || a.category || '';
+    cl.items.unshift(alCat ? { id, text: a.name, done: false, alCat } : { id, text: a.name, done: false });
     links.push({ c: id, a: a.id, name: a.name, checked: false });
     changed = true; pulled++;
   }
@@ -586,6 +591,24 @@ async function handleApi(request, env, url, ctx) {
     let html = await r.text();
     if (html.length > 3000000) html = html.slice(0, 3000000);
     return json({ url: target.href, ...extractRecipe(html, r.url || target.href) });
+  }
+
+  if (path === '/api/categorize' && method === 'POST') {
+    if (!env.AI) return json({ error: 'Sorting is not switched on' }, 501);
+    const body = await readJson(request);
+    const items = Array.isArray(body && body.items) ? body.items.slice(0, 40).map(x => String(x).replace(/\s+/g, ' ').slice(0, 80)) : [];
+    if (!items.length) return json({ cats: [] });
+    const prompt = 'Sort each shopping-list item into "grocery" (food, drinks, cooking ingredients, snacks — things from the food aisles of a supermarket) ' +
+      'or "other" (household, cleaning, paper goods, personal care, medicine, pet supplies, clothing, toys, hardware, activities — anything that is not food or drink). ' +
+      `Reply with ONLY a JSON array of ${items.length} strings, each "grocery" or "other", in the same order.\nItems:\n${items.map((x, i) => `${i + 1}. ${x}`).join('\n')}`;
+    let out;
+    try { out = await env.AI.run(VISION_MODEL, { messages: [{ role: 'user', content: prompt }], max_tokens: 400, temperature: 0 }); }
+    catch (e) { return json({ error: 'Sorting is busy — try again later' }, 502); }
+    const text = out && (out.response !== undefined ? out.response : out);
+    let arr = Array.isArray(text) ? text : null;
+    if (!arr) { const s2 = String(text || ''); const a = s2.indexOf('['), b = s2.lastIndexOf(']'); try { arr = JSON.parse(s2.slice(a, b + 1)); } catch (e) { arr = []; } }
+    const cats = items.map((_, i) => { const v = String(arr[i] || '').toLowerCase(); return v.startsWith('groc') ? 'grocery' : v.startsWith('oth') ? 'other' : null; });
+    return json({ cats });
   }
 
   if (path === '/api/transcribe' && method === 'POST') {

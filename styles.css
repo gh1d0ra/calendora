@@ -568,3 +568,7 @@ form:not(.is-allday) .only-timed, form.is-allday .only-allday, form.is-repeat .o
 .dev.wk.short .evtitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nowline.in-col { left: 0; }
 @media (max-width: 1100px) { .week-time .dhead, .week-time .dallday, .week-time .dgrid { min-width: 900px; } .week-time { overflow-x: auto; } }
+.cat-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 4px 6px; font-weight: 900; font-size: 15px; border-bottom: 2px solid var(--line); }
+.cat-head:first-child { padding-top: 4px; }
+.move-cat { font-size: 16px; opacity: .55; }
+.litem:hover .move-cat { opacity: 1; }
