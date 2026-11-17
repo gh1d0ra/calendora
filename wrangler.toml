@@ -11,3 +11,6 @@ run_worker_first = ["/api/*"]
 binding = "DB"
 database_name = "calendora"
 database_id = "f4154ecc-db4f-4706-9c8d-b5691d761d6a"
+
+[ai]
+binding = "AI"

@@ -13,6 +13,8 @@ const MAX_FAILS = 10;                   // failed passcode attempts …
 const FAIL_WINDOW = 15 * 60;            // … per 15 minutes per IP
 const MAX_BOARD_BYTES = 1900000;        // stay under D1's 2 MB value limit
 const BOARD_ID = 'family';
+const MAX_IMAGE_BYTES = 1800000;        // recipe photos are resized in the browser first
+const VISION_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 
 const te = new TextEncoder();
 const td = new TextDecoder();
@@ -50,6 +52,7 @@ async function ensureSchema(db) {
     db.prepare('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)'),
     db.prepare('CREATE TABLE IF NOT EXISTS board (id TEXT PRIMARY KEY, data TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL)'),
     db.prepare('CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT PRIMARY KEY, count INTEGER NOT NULL, window_start INTEGER NOT NULL)'),
+    db.prepare('CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL)'),
   ]);
   schemaReady = true;
 }
@@ -126,6 +129,94 @@ async function recordFail(db, ip) {
     .bind(ip, now, now, FAIL_WINDOW, now, FAIL_WINDOW, now).run();
 }
 const clearFails = (db, ip) => db.prepare('DELETE FROM login_attempts WHERE ip = ?').bind(ip).run();
+
+
+// ------------------------------------------------------------------ recipes
+function decodeEntities(s) {
+  const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', deg: '°', frac12: '½', frac14: '¼', frac34: '¾', frac13: '⅓', frac23: '⅔',
+    ndash: '–', mdash: '—', hellip: '…', rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', times: '×', eacute: 'é', egrave: 'è', ntilde: 'ñ', uuml: 'ü', ouml: 'ö', auml: 'ä', reg: '®', copy: '©', trade: '™', middot: '·', bull: '•', frasl: '⁄' };
+  return String(s).replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]{1,8});/gi, (m, e) => {
+    if (e[0] === '#') { const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); try { return String.fromCodePoint(n); } catch (x) { return m; } }
+    return named[e] || named[e.toLowerCase()] || m;
+  });
+}
+const cleanText = s => decodeEntities(String(s == null ? '' : s).replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+function findRecipeNode(node, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 6) return null;
+  if (Array.isArray(node)) { for (const n of node) { const r = findRecipeNode(n, depth + 1); if (r) return r; } return null; }
+  const t = node['@type'];
+  if (t === 'Recipe' || (Array.isArray(t) && t.includes('Recipe'))) return node;
+  return findRecipeNode(node['@graph'], depth + 1) || findRecipeNode(node.mainEntity, depth + 1) || null;
+}
+function recipeSteps(ins) {
+  const out = [];
+  const walk = x => {
+    if (!x || out.length > 80) return;
+    if (typeof x === 'string') { x.split(/\n+/).map(cleanText).filter(Boolean).forEach(v => out.push(v)); return; }
+    if (Array.isArray(x)) { x.forEach(walk); return; }
+    const t = x['@type'];
+    if (t === 'HowToSection' || (Array.isArray(t) && t.includes('HowToSection'))) { if (x.name) out.push(`— ${cleanText(x.name)} —`); walk(x.itemListElement); return; }
+    if (x.text) out.push(cleanText(x.text)); else if (x.name) out.push(cleanText(x.name));
+  };
+  walk(ins);
+  return out.filter(Boolean);
+}
+function firstImage(img) {
+  if (!img) return '';
+  if (typeof img === 'string') return img;
+  if (Array.isArray(img)) return firstImage(img[0]);
+  return img.url || img.contentUrl || '';
+}
+function durationText(iso) {
+  const m = String(iso || '').match(/P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?/);
+  if (!m || (!m[1] && !m[2] && !m[3])) return '';
+  const parts = [];
+  if (m[1]) parts.push(`${m[1]} d`);
+  if (m[2]) parts.push(`${m[2]} h`);
+  if (m[3]) parts.push(`${m[3]} min`);
+  return parts.join(' ');
+}
+function metaContent(html, prop) {
+  const re = new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]*>`, 'i');
+  const tag = (html.match(re) || [])[0];
+  if (!tag) return '';
+  return cleanText((tag.match(/content=["']([^"']*)["']/i) || [])[1] || '');
+}
+function extractRecipe(html, pageUrl) {
+  const scripts = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>[\s\S]*?<\/script>/gi) || [];
+  for (const sc of scripts) {
+    const body = sc.replace(/^<script[^>]*>/i, '').replace(/<\/script>$/i, '').trim();
+    let data;
+    try { data = JSON.parse(body); } catch (e) { continue; }
+    const r = findRecipeNode(data);
+    if (!r) continue;
+    let image = firstImage(r.image);
+    try { if (image) image = new URL(image, pageUrl).href; } catch (e) { image = ''; }
+    const y = Array.isArray(r.recipeYield) ? r.recipeYield[0] : r.recipeYield;
+    return {
+      found: true,
+      title: cleanText(r.name) || metaContent(html, 'og:title'),
+      image,
+      servings: cleanText(y),
+      time: durationText(r.totalTime) || durationText(r.cookTime) || '',
+      ingredients: (Array.isArray(r.recipeIngredient) ? r.recipeIngredient : r.ingredients || []).map(cleanText).filter(Boolean).slice(0, 80),
+      steps: recipeSteps(r.recipeInstructions).slice(0, 80),
+      notes: cleanText(r.description).slice(0, 600),
+    };
+  }
+  const title = metaContent(html, 'og:title') || cleanText((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '');
+  let image = metaContent(html, 'og:image');
+  try { if (image) image = new URL(image, pageUrl).href; } catch (e) { image = ''; }
+  return { found: false, title, image, servings: '', time: '', ingredients: [], steps: [], notes: '' };
+}
+function parseJsonLoose(text) {
+  if (text && typeof text === 'object') return text;
+  const s = String(text || '');
+  const a = s.indexOf('{'), b = s.lastIndexOf('}');
+  if (a < 0 || b <= a) return null;
+  try { return JSON.parse(s.slice(a, b + 1)); } catch (e) { return null; }
+}
+const asStrList = v => (Array.isArray(v) ? v : typeof v === 'string' ? v.split(/\n+/) : []).map(x => cleanText(typeof x === 'string' ? x : x && (x.text || x.name))).filter(Boolean).slice(0, 80);
 
 // ------------------------------------------------------------------ API
 async function readJson(request) {
@@ -213,6 +304,75 @@ async function handleApi(request, env, url) {
     // someone else saved first: send back what is on the server
     const row = await db.prepare('SELECT data, version, updated_at FROM board WHERE id = ?').bind(BOARD_ID).first();
     return json({ error: 'conflict', version: row ? row.version : 0, updatedAt: row ? row.updated_at : 0, data: row ? JSON.parse(row.data) : null }, 409);
+  }
+
+  if (path === '/api/images' && method === 'POST') {
+    const type = (request.headers.get('Content-Type') || '').split(';')[0].trim();
+    if (!/^image\/(jpeg|png|webp)$/.test(type)) return json({ error: 'Only JPEG, PNG or WebP photos' }, 415);
+    const buf = await request.arrayBuffer();
+    if (!buf.byteLength) return json({ error: 'Empty photo' }, 400);
+    if (buf.byteLength > MAX_IMAGE_BYTES) return json({ error: 'That photo is too large' }, 413);
+    const id = b64u(crypto.getRandomValues(new Uint8Array(12)));
+    await db.prepare('INSERT INTO images (id, type, data, created_at) VALUES (?, ?, ?, ?)').bind(id, type, buf, Date.now()).run();
+    return json({ id });
+  }
+
+  const imgMatch = path.match(/^\/api\/images\/([A-Za-z0-9_-]{8,40})$/);
+  if (imgMatch && method === 'GET') {
+    const row = await db.prepare('SELECT type, data FROM images WHERE id = ?').bind(imgMatch[1]).first();
+    if (!row) return json({ error: 'Photo not found' }, 404);
+    const data = row.data instanceof ArrayBuffer ? row.data : new Uint8Array(row.data);
+    return new Response(data, { headers: { 'Content-Type': row.type, 'Cache-Control': 'private, max-age=31536000, immutable' } });
+  }
+  if (imgMatch && method === 'DELETE') {
+    await db.prepare('DELETE FROM images WHERE id = ?').bind(imgMatch[1]).run();
+    return json({ ok: true });
+  }
+
+  if (path === '/api/recipe-import' && method === 'POST') {
+    const body = await readJson(request);
+    let target;
+    try { target = new URL(String((body && body.url) || '').trim()); } catch (e) { return json({ error: 'That link is not valid' }, 400); }
+    if (!/^https?:$/.test(target.protocol)) return json({ error: 'The link must start with https://' }, 400);
+    let r;
+    try {
+      r = await fetch(target.href, { redirect: 'follow', headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 Calendora/1.0' } });
+    } catch (e) { return json({ error: 'Could not reach that page' }, 502); }
+    if (!r.ok) return json({ error: `That site answered ${r.status} — you can still save the link` }, 502);
+    let html = await r.text();
+    if (html.length > 3000000) html = html.slice(0, 3000000);
+    return json({ url: target.href, ...extractRecipe(html, r.url || target.href) });
+  }
+
+  if (path === '/api/transcribe' && method === 'POST') {
+    if (!env.AI) return json({ error: 'Photo transcription is not switched on for this Calendora' }, 501);
+    const body = await readJson(request);
+    const image = body && typeof body.image === 'string' ? body.image : '';
+    if (!/^data:image\/(jpeg|png|webp);base64,/.test(image)) return json({ error: 'Send the photo as a JPEG, PNG or WebP' }, 400);
+    if (image.length > MAX_IMAGE_BYTES * 1.4) return json({ error: 'That photo is too large' }, 413);
+    const prompt = 'This photo shows a recipe (a cookbook page, recipe card, screenshot or handwritten note). Transcribe it faithfully. ' +
+      'Reply with ONLY a JSON object with these keys: "title" (string), "servings" (string), "time" (string), ' +
+      '"ingredients" (array of strings, one per ingredient line, keep quantities and units), "steps" (array of strings, one per step, in order), ' +
+      '"notes" (string, anything else useful). Use "" or [] when something is not in the photo. Do not add anything that is not in the photo.';
+    let out;
+    try {
+      out = await env.AI.run(VISION_MODEL, {
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: image } }] }],
+        max_tokens: 2048,
+        temperature: 0.1,
+      });
+    } catch (e) { return json({ error: 'The photo reader is busy — try again in a minute' }, 502); }
+    const text = out && (out.response !== undefined ? out.response : out.result ? out.result.response : out);
+    const parsed = parseJsonLoose(text);
+    if (!parsed) return json({ title: '', servings: '', time: '', ingredients: [], steps: [], notes: cleanText(typeof text === 'string' ? text : '').slice(0, 4000), partial: true });
+    return json({
+      title: cleanText(parsed.title).slice(0, 120),
+      servings: cleanText(parsed.servings).slice(0, 60),
+      time: cleanText(parsed.time).slice(0, 60),
+      ingredients: asStrList(parsed.ingredients),
+      steps: asStrList(parsed.steps),
+      notes: cleanText(parsed.notes).slice(0, 2000),
+    });
   }
 
   if (path === '/api/ical' && method === 'GET') {

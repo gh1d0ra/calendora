@@ -91,13 +91,13 @@
   function defaults() {
     return {
       version: 1,
-      members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [],
+      members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [],
       hidden: [], gEvents: [], gSyncedAt: null,
       settings: {
         weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true,
         google: { clientId: '', connected: false, email: '', calendars: {}, defaultCal: '' },
       },
-      ui: { view: 'calendar', calView: 'week', listId: null },
+      ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan' },
     };
   }
 
@@ -202,6 +202,13 @@
       s.meals[W(i)] = m;
     }
 
+    s.recipes = [{
+      id: 'r_tacos', title: 'Weeknight beef tacos', url: '', imageId: null, imageUrl: '', servings: '4', time: '25 min',
+      ingredients: ['1 lb ground beef', '1 small onion, diced', '2 tsp chili powder', '1 tsp cumin', '½ tsp garlic powder', 'Salt to taste', '8 taco shells', 'Shredded lettuce, cheese, salsa and sour cream for topping'],
+      steps: ['Brown the beef with the onion in a large pan over medium-high heat, about 8 minutes.', 'Drain any fat, then stir in the spices, a pinch of salt and ¼ cup water.', 'Simmer until thick, 3–4 minutes.', 'Warm the taco shells in the oven while the filling simmers.', 'Fill the shells and let everyone add their own toppings.'],
+      notes: 'Our Tuesday favourite. Kids like it with extra cheese.',
+    }];
+    s.meals[W(2)] = { ...(s.meals[W(2)] || {}), dinner: { name: 'Tacos', recipeId: 'r_tacos' } };
     s.rewards = [
       { title: 'Pick the movie', emoji: '🎬', cost: 5 },
       { title: '30 min screen time', emoji: '📱', cost: 8 },
@@ -322,14 +329,14 @@
       });
     } catch (e) { return []; }
   }
-  async function resizeImage(file, max = 1920) {
+  async function resizeImage(file, max = 1920, quality = 0.86) {
     const bmp = await createImageBitmap(file);
     const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
     const c = document.createElement('canvas');
     c.width = Math.round(bmp.width * scale);
     c.height = Math.round(bmp.height * scale);
     c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
-    return new Promise(res => c.toBlob(res, 'image/jpeg', 0.86));
+    return new Promise(res => c.toBlob(res, 'image/jpeg', quality));
   }
 
   // ---------------------------------------------------------------- Google Calendar sync
@@ -748,7 +755,8 @@
     for (let i = 0; i < 7; i++) {
       const d = addDays(ws, i), ds = ymd(d), evs = eventsOn(ds);
       const wx = dailyWeather(ds);
-      const meal = state.settings.showMeals && state.meals[ds] && state.meals[ds].dinner;
+      const mv = state.settings.showMeals && state.meals[ds] && state.meals[ds].dinner;
+      const meal = mealName(mv), mrec = recipeById(mealRecipeId(mv));
       cols += `<div class="wcol ${ds === t ? 'today' : ''} ${ds < t ? 'pastday' : ''}">
         <div class="whead" data-action="goto-day" data-date="${ds}">
           <span class="wdow">${DOW[d.getDay()]}</span><span class="wnum">${d.getDate()}</span>
@@ -757,7 +765,7 @@
         <div class="wbody" data-action="new-event" data-date="${ds}">
           ${evs.map(e => evCard(e, ds)).join('') || '<div class="wempty">Tap to add</div>'}
         </div>
-        ${state.settings.showMeals ? `<div class="wmeal ${meal ? '' : 'none'}" data-action="edit-meal" data-date="${ds}" data-type="dinner">🍽️ ${meal ? esc(meal) : 'Add dinner'}</div>` : ''}
+        ${state.settings.showMeals ? `<div class="wmeal ${meal ? '' : 'none'}" data-action="edit-meal" data-date="${ds}" data-type="dinner"><span class="wmeal-name">🍽️ ${meal ? esc(meal) : 'Add dinner'}</span>${mrec ? `<button class="recipe-chip" data-action="open-recipe" data-id="${mrec.id}" aria-label="Open recipe">📖</button>` : ''}</div>` : ''}
       </div>`;
     }
     $('#view').innerHTML = `<div class="week">${cols}</div>`;
@@ -990,8 +998,250 @@
     $('#view').innerHTML = `<div class="lists"><div class="list-side card">${side}</div><div class="list-main card">${main}</div></div>`;
   }
 
+  // ---------------------------------------------------------------- recipes
+  const mealName = v => (v && typeof v === 'object' ? v.name || '' : v || '');
+  const mealRecipeId = v => (v && typeof v === 'object' ? v.recipeId || null : null);
+  const recipeById = id => (state.recipes || []).find(r => r.id === id);
+  const OPEN_RECIPE_KEY = 'calendora.openRecipe';
+  const hostOf = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch (e) { return ''; } };
+  const recipeImg = r => (r.imageId ? `/api/images/${encodeURIComponent(r.imageId)}` : r.imageUrl || '');
+
+  function renderRecipeLibrary() {
+    const list = (state.recipes || []).slice().sort((a, b) => a.title.localeCompare(b.title));
+    $('#view').innerHTML = `<div class="recipes">${list.length ? `<div class="recipe-grid">${list.map(r => {
+      const img = recipeImg(r);
+      const meta = r.url ? hostOf(r.url) : r.imageId && !(r.steps || []).length ? 'Photo' : 'Family recipe';
+      return `<button class="recipe-card card" data-action="open-recipe" data-id="${r.id}">
+        <span class="rc-img" ${img ? `style="background-image:url('${esc(img)}')"` : ''}>${img ? '' : '🍳'}</span>
+        <span class="rc-title">${esc(r.title)}</span>
+        <span class="rc-meta">${esc(meta)}${r.time ? ` · ${esc(r.time)}` : ''}</span>
+      </button>`;
+    }).join('')}</div>` : `<div class="empty card"><div style="font-size:48px">🍳</div><p>No recipes yet. Paste a link, snap a photo of a cookbook page, or type one in.</p>
+      <button class="btn primary" data-action="new-recipe">${icon('plus')} Add a recipe</button></div>`}</div>`;
+  }
+
+  function recipeAddChooser(attach) {
+    const server = cloud.mode === 'server';
+    modal({
+      title: 'Add a recipe',
+      body: `<div class="add-choices">
+        <button type="button" class="add-choice" data-pick="link"><span>🔗</span><b>Paste a link</b><small>From any recipe website</small></button>
+        <button type="button" class="add-choice" data-pick="camera" ${server ? '' : 'disabled'}><span>📷</span><b>Take a photo</b><small>Cookbook page or recipe card</small></button>
+        <button type="button" class="add-choice" data-pick="upload" ${server ? '' : 'disabled'}><span>🖼️</span><b>Choose a photo</b><small>From this device</small></button>
+        <button type="button" class="add-choice" data-pick="type"><span>✍️</span><b>Type it in</b><small>Family favourites</small></button>
+      </div>${server ? '' : '<p class="muted small">Photos need the shared Calendora address.</p>'}`,
+      onOpen(form) {
+        $$('[data-pick]', form).forEach(b => b.addEventListener('click', () => {
+          const k = b.dataset.pick;
+          closeModal();
+          if (k === 'link') recipeLinkModal(attach);
+          else if (k === 'type') recipeEditor(null, {}, attach);
+          else pickRecipePhoto(k === 'camera', attach);
+        }));
+      },
+    });
+  }
+
+  function recipeLinkModal(attach) {
+    modal({
+      title: 'Recipe from a link',
+      body: `<label class="field"><span>Recipe link</span><input name="url" type="url" placeholder="https://…" autofocus autocomplete="off"></label>
+        <p class="muted small">Calendora will try to pull in the ingredients and steps. The link to the original page is always kept.</p>`,
+      saveLabel: 'Get recipe',
+      onSave(form) {
+        const url = fval(form, 'url');
+        if (!/^https?:\/\/\S+\.\S+/.test(url)) { toast('Paste a link that starts with https://'); return false; }
+        if (cloud.mode !== 'server') { closeModal(); recipeEditor(null, { url, title: hostOf(url) }, attach); return false; }
+        const btn = $('button[type=submit]', form); btn.disabled = true; btn.textContent = 'Reading the page…';
+        api('/api/recipe-import', { method: 'POST', body: JSON.stringify({ url }) }).then(r => {
+          closeModal();
+          if (r.ok) {
+            const d = r.data;
+            if (!d.found) toast('Couldn’t find the recipe details on that page — the link is saved');
+            recipeEditor(null, { url: d.url || url, title: d.title, imageUrl: d.image, servings: d.servings, time: d.time, ingredients: d.ingredients, steps: d.steps, notes: d.notes }, attach);
+          } else {
+            toast((r.data && r.data.error) || 'Couldn’t read that page — the link is saved');
+            recipeEditor(null, { url, title: hostOf(url) }, attach);
+          }
+        }).catch(() => { closeModal(); recipeEditor(null, { url, title: hostOf(url) }, attach); });
+        return false;
+      },
+    });
+  }
+
+  function pickRecipePhoto(camera, attach) {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*';
+    if (camera) inp.setAttribute('capture', 'environment');
+    inp.addEventListener('change', async () => {
+      const f = inp.files && inp.files[0];
+      if (!f) return;
+      try { const blob = await resizeImage(f, 1600, 0.82); recipePhotoChoice(blob, attach); }
+      catch (e) { toast('That photo could not be opened'); }
+    });
+    inp.click();
+  }
+  const blobToDataUrl = blob => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(blob); });
+  async function uploadImage(blob) {
+    const r = await fetch('/api/images', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': blob.type || 'image/jpeg' }, body: blob });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'Could not save the photo');
+    return j.id;
+  }
+
+  function recipePhotoChoice(blob, attach) {
+    const url = URL.createObjectURL(blob);
+    modal({
+      title: 'What should happen with this photo?',
+      body: `<img class="photo-preview" src="${url}" alt="Recipe photo">
+        <div class="add-choices two">
+          <button type="button" class="add-choice" data-pick="save"><span>🖼️</span><b>Save the photo</b><small>Keep the picture as the recipe</small></button>
+          <button type="button" class="add-choice" data-pick="transcribe"><span>📝</span><b>Transcribe it</b><small>Turn it into ingredients and steps</small></button>
+        </div>
+        <label class="check-row only-transcribe-hint"><input type="checkbox" name="keep" checked> Keep the photo with the transcription</label>
+        <div class="busy-note" hidden>Reading the recipe… this can take up to half a minute.</div>`,
+      onOpen(form) {
+        $$('[data-pick]', form).forEach(b => b.addEventListener('click', async () => {
+          const k = b.dataset.pick;
+          $$('[data-pick]', form).forEach(x => { x.disabled = true; });
+          try {
+            if (k === 'save') {
+              const imageId = await uploadImage(blob);
+              closeModal(); URL.revokeObjectURL(url);
+              recipeEditor(null, { imageId, title: '' }, attach);
+              return;
+            }
+            $('.busy-note', form).hidden = false;
+            const keep = form.elements.keep.checked;
+            const [imageId, r] = await Promise.all([
+              keep ? uploadImage(blob) : Promise.resolve(null),
+              blobToDataUrl(blob).then(d => api('/api/transcribe', { method: 'POST', body: JSON.stringify({ image: d }) })),
+            ]);
+            if (!r.ok) throw new Error((r.data && r.data.error) || 'Couldn’t read that photo');
+            closeModal(); URL.revokeObjectURL(url);
+            if (r.data.partial) toast('Read the photo, but the layout was unclear — please check the text');
+            recipeEditor(null, { ...r.data, imageId }, attach);
+          } catch (e) {
+            toast(e.message || 'Something went wrong');
+            $$('[data-pick]', form).forEach(x => { x.disabled = false; });
+            $('.busy-note', form).hidden = true;
+          }
+        }));
+      },
+    });
+  }
+
+  function recipeEditor(rec, preset = {}, attach) {
+    const isNew = !rec;
+    const r = rec ? { ...rec } : { id: uid(), title: '', url: '', imageId: null, imageUrl: '', servings: '', time: '', ingredients: [], steps: [], notes: '', ...preset };
+    const img = recipeImg(r);
+    modal({
+      title: isNew ? 'New recipe' : 'Edit recipe',
+      cls: 'wide',
+      body: `
+        <input class="title-input" name="title" placeholder="Recipe name" value="${esc(r.title)}" autofocus maxlength="120" />
+        ${img ? `<div class="editor-photo"><img src="${esc(img)}" alt=""><label class="check-row"><input type="checkbox" name="dropPhoto"> Remove photo</label></div>` : ''}
+        <div class="row">
+          <label class="field"><span>Serves</span><input name="servings" value="${esc(r.servings)}" placeholder="4" maxlength="60"></label>
+          <label class="field"><span>Time</span><input name="time" value="${esc(r.time)}" placeholder="45 min" maxlength="60"></label>
+        </div>
+        <label class="field"><span>Ingredients <small class="muted">(one per line)</small></span><textarea name="ingredients" rows="6">${esc((r.ingredients || []).join('\n'))}</textarea></label>
+        <label class="field"><span>Steps <small class="muted">(one per line)</small></span><textarea name="steps" rows="7">${esc((r.steps || []).join('\n'))}</textarea></label>
+        <label class="field"><span>Link to the original</span><input name="url" type="url" value="${esc(r.url)}" placeholder="https://…"></label>
+        <label class="field"><span>Notes</span><textarea name="notes" rows="2">${esc(r.notes)}</textarea></label>`,
+      onSave(form) {
+        const title = fval(form, 'title');
+        if (!title) { form.elements.title.classList.add('invalid'); form.elements.title.focus(); return false; }
+        const lines = name => fval(form, name).split(/\n+/).map(s => s.trim()).filter(Boolean);
+        const url = fval(form, 'url');
+        const out = { ...r, title, servings: fval(form, 'servings'), time: fval(form, 'time'), ingredients: lines('ingredients'), steps: lines('steps'), notes: fval(form, 'notes'), url: /^https?:\/\//.test(url) ? url : '' };
+        if (form.elements.dropPhoto && form.elements.dropPhoto.checked) {
+          if (out.imageId) api(`/api/images/${encodeURIComponent(out.imageId)}`, { method: 'DELETE' }).catch(() => {});
+          out.imageId = null; out.imageUrl = '';
+        }
+        state.recipes = isNew ? [...(state.recipes || []), out] : state.recipes.map(x => (x.id === out.id ? out : x));
+        if (attach) {
+          state.meals[attach.date] = { ...(state.meals[attach.date] || {}) };
+          const cur = state.meals[attach.date][attach.type];
+          state.meals[attach.date][attach.type] = { name: mealName(cur) || out.title, recipeId: out.id };
+        }
+        save(); renderView();
+        toast(isNew ? `Saved “${out.title}”` : 'Recipe updated');
+      },
+      onDelete: isNew ? null : () => {
+        choice(`Delete “${esc(r.title)}”?`, 'Meals that use it keep their name but lose the recipe.', [{
+          label: 'Delete recipe', cls: 'danger',
+          fn: () => {
+            if (r.imageId) api(`/api/images/${encodeURIComponent(r.imageId)}`, { method: 'DELETE' }).catch(() => {});
+            state.recipes = state.recipes.filter(x => x.id !== r.id);
+            Object.values(state.meals).forEach(day => Object.keys(day).forEach(k => { if (mealRecipeId(day[k]) === r.id) day[k] = mealName(day[k]); }));
+            if (openRecipeId() === r.id) closeRecipe();
+            save(); renderView();
+          },
+        }]);
+        return false;
+      },
+    });
+  }
+
+  // ---- cooking view: stays open (on this device) until someone closes it
+  let wakeLock = null;
+  const openRecipeId = () => { try { return localStorage.getItem(OPEN_RECIPE_KEY); } catch (e) { return null; } };
+  async function keepAwake(on) {
+    try {
+      if (on && 'wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); }
+      if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+    } catch (e) { /* not supported or not allowed */ }
+  }
+  const recipeChecks = {};
+  function openRecipe(id) {
+    const r = recipeById(id);
+    if (!r) { closeRecipe(); return; }
+    try { localStorage.setItem(OPEN_RECIPE_KEY, id); } catch (e) { /* ignore */ }
+    const el = $('#recipeView');
+    const img = recipeImg(r);
+    const checks = recipeChecks[id] = recipeChecks[id] || { ing: {}, step: -1 };
+    const hasText = (r.ingredients || []).length || (r.steps || []).length;
+    el.hidden = false;
+    el.innerHTML = `<div class="rv-card">
+      <div class="rv-head">
+        <div class="rv-titles"><h2>${esc(r.title)}</h2>
+          <div class="rv-meta">${[r.servings && `Serves ${esc(r.servings)}`, r.time && esc(r.time), r.url && esc(hostOf(r.url))].filter(Boolean).join(' · ')}</div></div>
+        ${r.url ? `<a class="btn" href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Open original ↗</a>` : ''}
+        <button class="btn" data-action="edit-recipe" data-id="${r.id}">${icon('edit')} Edit</button>
+        <button class="icon-btn" data-action="close-recipe" aria-label="Close recipe">✕</button>
+      </div>
+      <div class="rv-body ${hasText ? '' : 'photo-only'}">
+        ${img || (r.ingredients || []).length ? `<div class="rv-side">
+          ${img ? `<img class="rv-photo" src="${esc(img)}" alt="${esc(r.title)}" data-action="zoom-photo">` : ''}
+          ${(r.ingredients || []).length ? `<h3>Ingredients</h3><ul class="rv-ing">${r.ingredients.map((x, i) => `<li class="${checks.ing[i] ? 'got' : ''}" data-action="tick-ing" data-i="${i}"><span class="tick"></span>${esc(x)}</li>`).join('')}</ul>
+            <button class="btn small" data-action="recipe-to-list" data-id="${r.id}">🛒 Add to Groceries</button>` : ''}
+        </div>` : ''}
+        <div class="rv-main">
+          ${(r.steps || []).length ? `<h3>Steps</h3><ol class="rv-steps">${r.steps.map((x, i) => /^—.*—$/.test(x) ? `<li class="section">${esc(x.replace(/—/g, '').trim())}</li>` : `<li class="${i === checks.step ? 'current' : i < checks.step ? 'done' : ''}" data-action="tick-step" data-i="${i}">${esc(x)}</li>`).join('')}</ol>`
+            : !hasText && !img ? `<div class="empty-sm">This recipe is just a link. ${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">Open the recipe ↗</a>` : ''}</div>` : ''}
+          ${r.notes ? `<h3>Notes</h3><p class="rv-notes">${esc(r.notes)}</p>` : ''}
+        </div>
+      </div></div>`;
+    keepAwake(true);
+  }
+  function closeRecipe() {
+    try { localStorage.removeItem(OPEN_RECIPE_KEY); } catch (e) { /* ignore */ }
+    const el = $('#recipeView');
+    el.hidden = true; el.innerHTML = '';
+    keepAwake(false);
+  }
+  const recipeOpen = () => !$('#recipeView').hidden;
+
   // ---------------------------------------------------------------- meals
   function renderMeals() {
+    const tabs = `<div class="seg">${[['plan', 'Plan'], ['recipes', 'Recipes']].map(([k, l]) => `<button class="${state.ui.mealsTab === k ? 'on' : ''}" data-action="meals-tab" data-v="${k}">${l}</button>`).join('')}</div>`;
+    if (state.ui.mealsTab === 'recipes') {
+      $('#toolbar').innerHTML = `<h1>Recipes <span class="muted">${(state.recipes || []).length}</span></h1>${tabs}<span class="spacer"></span>
+        <button class="btn primary" data-action="new-recipe">${icon('plus')} Add recipe</button>`;
+      renderRecipeLibrary();
+      return;
+    }
     const ws = startOfWeek(ui.mealWeek), t = todayStr();
     const e = addDays(ws, 6);
     $('#toolbar').innerHTML = `
@@ -1001,6 +1251,7 @@
         <button class="icon-btn" data-action="nav" data-dir="1" aria-label="Next week">${icon('right')}</button>
       </div>
       <h1>Meal plan <span class="muted">${MON[ws.getMonth()]} ${ws.getDate()} – ${MON[e.getMonth()]} ${e.getDate()}</span></h1>
+      ${tabs}
       <span class="spacer"></span>
       <button class="btn" data-action="copy-meals">${icon('copy')} Copy last week</button>`;
     let h = `<div class="meals card"><div class="mg-corner"></div>`;
@@ -1008,8 +1259,9 @@
     MEAL_TYPES.forEach(([k, label, ic]) => {
       h += `<div class="mg-type"><span>${ic}</span>${label}</div>`;
       for (let i = 0; i < 7; i++) {
-        const ds = ymd(addDays(ws, i)); const v = state.meals[ds] && state.meals[ds][k];
-        h += `<div class="mg-cell ${v ? 'filled' : ''} ${ds === t ? 'today' : ''} t-${k}" data-action="edit-meal" data-date="${ds}" data-type="${k}">${v ? esc(v) : '<span class="plus">+</span>'}</div>`;
+        const ds = ymd(addDays(ws, i)); const raw = state.meals[ds] && state.meals[ds][k];
+        const v = mealName(raw), rec = recipeById(mealRecipeId(raw));
+        h += `<div class="mg-cell ${v ? 'filled' : ''} ${ds === t ? 'today' : ''} t-${k}" data-action="edit-meal" data-date="${ds}" data-type="${k}">${v ? `<span>${esc(v)}</span>` : '<span class="plus">+</span>'}${rec ? `<button class="recipe-chip" data-action="open-recipe" data-id="${rec.id}" aria-label="Open recipe">📖</button>` : ''}</div>`;
       }
     });
     $('#view').innerHTML = h + '</div>';
@@ -1440,33 +1692,67 @@
 
   function mealModal(ds, type) {
     const label = MEAL_TYPES.find(m => m[0] === type) || MEAL_TYPES[2];
-    const cur = (state.meals[ds] && state.meals[ds][type]) || '';
-    const past = new Set();
-    Object.values(state.meals).forEach(day => Object.entries(day).forEach(([k, v]) => { if (k === type && v) past.add(v); }));
+    const raw = state.meals[ds] && state.meals[ds][type];
+    const cur = mealName(raw), curRec = mealRecipeId(raw);
+    const past = new Map(); // meal name -> recipe id (if it had one)
+    Object.values(state.meals).forEach(day => Object.entries(day).forEach(([k, v]) => { if (k === type && mealName(v)) past.set(mealName(v), mealRecipeId(v) || past.get(mealName(v)) || null); }));
+    const recipes = (state.recipes || []).slice().sort((a, b) => a.title.localeCompare(b.title));
     const d = parse(ds);
     modal({
       title: `${label[2]} ${label[1]} · ${DOW[d.getDay()]} ${MON[d.getMonth()]} ${d.getDate()}`,
       body: `<input class="title-input" name="meal" list="mealSuggest" value="${esc(cur)}" placeholder="What’s on the menu?" autofocus maxlength="80" />
-        <datalist id="mealSuggest">${[...past].map(v => `<option value="${esc(v)}">`).join('')}</datalist>
-        ${past.size ? `<div class="field"><span>Recent</span><div class="suggest">${[...past].slice(-10).reverse().map(v => `<button type="button" class="pill" data-meal="${esc(v)}">${esc(v)}</button>`).join('')}</div></div>` : ''}
-        <label class="field"><span>Add the ingredients to a list <small class="muted">(optional, comma-separated)</small></span><input name="ingredients" placeholder="tortillas, ground beef, salsa"></label>`,
-      onOpen(form) { $$('[data-meal]', form).forEach(b => b.addEventListener('click', () => { form.elements.meal.value = b.dataset.meal; })); },
+        <datalist id="mealSuggest">${[...past.keys()].map(v => `<option value="${esc(v)}">`).join('')}</datalist>
+        ${past.size ? `<div class="field"><span>Recent</span><div class="suggest">${[...past.keys()].slice(-10).reverse().map(v => `<button type="button" class="pill" data-meal="${esc(v)}">${esc(v)}${past.get(v) ? ' 📖' : ''}</button>`).join('')}</div></div>` : ''}
+        <div class="field"><span>Recipe</span>
+          <div class="row recipe-pick">
+            <select name="recipe"><option value="">No recipe</option>${recipes.map(r => `<option value="${r.id}" ${r.id === curRec ? 'selected' : ''}>${esc(r.title)}</option>`).join('')}</select>
+            <button type="button" class="btn" data-new-recipe>${icon('plus')} New recipe</button>
+          </div>
+          <small class="muted">Paste a link, snap a photo or type it in — it opens in a cooking view from the calendar.</small>
+        </div>
+        <label class="check-row recipe-groceries" hidden><input type="checkbox" name="addIng"> Add this recipe’s ingredients to Groceries</label>
+        <label class="field"><span>Add other items to Groceries <small class="muted">(optional, comma-separated)</small></span><input name="ingredients" placeholder="tortillas, ground beef, salsa"></label>`,
+      onOpen(form) {
+        const sel = form.elements.recipe;
+        const syncIng = () => { const r = recipeById(sel.value); $('.recipe-groceries', form).hidden = !(r && (r.ingredients || []).length); };
+        sel.addEventListener('change', () => { syncIng(); const r = recipeById(sel.value); if (r && !form.elements.meal.value.trim()) form.elements.meal.value = r.title; });
+        syncIng();
+        $$('[data-meal]', form).forEach(b => b.addEventListener('click', () => {
+          form.elements.meal.value = b.dataset.meal;
+          const rid = past.get(b.dataset.meal);
+          if (rid && recipeById(rid)) { sel.value = rid; syncIng(); }
+        }));
+        $('[data-new-recipe]', form).addEventListener('click', () => {
+          const name = form.elements.meal.value.trim();
+          state.meals[ds] = { ...(state.meals[ds] || {}) };
+          if (name) state.meals[ds][type] = { name, recipeId: curRec };
+          closeModal();
+          recipeAddChooser({ date: ds, type });
+        });
+      },
       onSave(form) {
         const v = fval(form, 'meal');
+        const rid = form.elements.recipe.value || null;
+        const rec = recipeById(rid);
         state.meals[ds] = { ...(state.meals[ds] || {}) };
-        if (v) state.meals[ds][type] = v; else delete state.meals[ds][type];
+        if (v || rec) state.meals[ds][type] = rec ? { name: v || rec.title, recipeId: rec.id } : v;
+        else delete state.meals[ds][type];
         const ing = fval(form, 'ingredients').split(',').map(s => s.trim()).filter(Boolean);
-        if (ing.length) {
-          let gl = state.lists.find(l => /grocer/i.test(l.name));
-          if (!gl) { gl = { id: uid(), name: 'Groceries', emoji: '🛒', items: [] }; state.lists.unshift(gl); }
-          ing.forEach(t => gl.items.unshift({ id: uid(), text: t, done: false }));
-          toast(`Added ${ing.length} item${ing.length > 1 ? 's' : ''} to ${gl.name}`);
-        }
+        if (rec && form.elements.addIng.checked) ing.push(...(rec.ingredients || []));
+        if (ing.length) addToGroceries(ing);
         save(); renderView();
       },
       onDelete: cur ? () => { delete state.meals[ds][type]; save(); renderView(); } : null,
       deleteLabel: 'Clear',
     });
+  }
+  function addToGroceries(items) {
+    let gl = state.lists.find(l => /grocer/i.test(l.name));
+    if (!gl) { gl = { id: uid(), name: 'Groceries', emoji: '🛒', items: [] }; state.lists.unshift(gl); }
+    const have = new Set(gl.items.filter(i => !i.done).map(i => i.text.toLowerCase()));
+    const add = items.filter(t => t && !have.has(t.toLowerCase()));
+    add.slice().reverse().forEach(t => gl.items.unshift({ id: uid(), text: t, done: false }));
+    toast(add.length ? `Added ${add.length} item${add.length > 1 ? 's' : ''} to ${gl.name}` : `Everything is already on ${gl.name}`);
   }
 
   function itemModal(list, item) {
@@ -1504,6 +1790,15 @@
     },
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
+    'meals-tab'(el) { state.ui.mealsTab = el.dataset.v; save({ localOnly: true }); renderView(); },
+    'new-recipe'() { recipeAddChooser(null); },
+    'open-recipe'(el) { openRecipe(el.dataset.id); },
+    'close-recipe'() { closeRecipe(); },
+    'edit-recipe'(el) { const r = recipeById(el.dataset.id); if (r) recipeEditor(r); },
+    'recipe-to-list'(el) { const r = recipeById(el.dataset.id); if (r) { addToGroceries(r.ingredients || []); save(); } },
+    'tick-ing'(el) { const id = openRecipeId(); const c = recipeChecks[id]; if (!c) return; const i = el.dataset.i; c.ing[i] = !c.ing[i]; el.classList.toggle('got', !!c.ing[i]); },
+    'tick-step'(el) { const id = openRecipeId(); const c = recipeChecks[id]; if (!c) return; const i = Number(el.dataset.i); c.step = c.step === i ? i + 1 : i; openRecipe(id); },
+    'zoom-photo'(el) { el.classList.toggle('zoomed'); },
     'ical-refresh'() { icalRefresh({ fresh: true }); },
     'ical-remove'(el) {
       const f = icalFeed(el.dataset.id); if (!f) return;
@@ -1716,7 +2011,7 @@
       case 'chores': return actions['new-chore']({ dataset: {} });
       case 'rewards': return rewardModal();
       case 'lists': return listModal();
-      case 'meals': return mealModal(todayStr(), 'dinner');
+      case 'meals': return state.ui.mealsTab === 'recipes' ? recipeAddChooser(null) : mealModal(todayStr(), 'dinner');
       case 'photos': return $('#photoInput').click();
       default: return null;
     }
@@ -1735,7 +2030,7 @@
   document.addEventListener('keydown', e => {
     if (ssOn) { stopScreensaver(); return; }
     if (e.key === 'Escape' && modalOpen) { closeModal(); return; }
-    if (modalOpen || !$('#lock').hidden || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+    if (modalOpen || !$('#lock').hidden || recipeOpen() || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
     if (e.key === 'ArrowLeft') navigate(-1);
     else if (e.key === 'ArrowRight') navigate(1);
     else if (e.key === 't') goToday();
@@ -1747,7 +2042,7 @@
   // When the app is served by the Calendora Worker, the family board is shared through /api.
   // Anywhere else (GitHub Pages, a local file) it runs in local-only mode.
   const CLOUD_KEY = 'calendora.cloud';
-  const SHARED_KEYS = ['members', 'events', 'chores', 'choreDone', 'lists', 'meals', 'rewards', 'redemptions', 'icalFeeds'];
+  const SHARED_KEYS = ['members', 'events', 'chores', 'choreDone', 'lists', 'meals', 'rewards', 'redemptions', 'icalFeeds', 'recipes'];
   const cloud = { mode: 'unknown', configured: false, signedIn: false, version: 0, lastStr: '', pushing: false, again: false, offline: false, lastSync: 0, timer: null };
   try { const m = JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null'); if (m) { cloud.version = m.version || 0; cloud.lastStr = m.lastStr || ''; cloud.lastSync = m.lastSync || 0; cloud.known = true; } } catch (e) { /* ignore */ }
   const saveCloudMeta = () => { try { localStorage.setItem(CLOUD_KEY, JSON.stringify({ version: cloud.version, lastStr: cloud.lastStr, lastSync: cloud.lastSync })); } catch (e) { /* ignore */ } };
@@ -1768,6 +2063,7 @@
     icalRemap();
     save({ localOnly: true });
     render();
+    if (recipeOpen() && !modalOpen) { const id = openRecipeId(); if (recipeById(id)) openRecipe(id); else closeRecipe(); }
   }
   async function api(path, opts = {}) {
     const headers = opts.body ? { 'Content-Type': 'application/json' } : {};
@@ -2341,7 +2637,7 @@
     positionNowLine();
     if (ssOn) updateScreensaver();
     const m = state.settings.screensaverMin;
-    if (!ssOn && !modalOpen && $('#lock').hidden && m > 0 && Date.now() - lastActive > m * 60000) startScreensaver();
+    if (!ssOn && !modalOpen && $('#lock').hidden && !recipeOpen() && m > 0 && Date.now() - lastActive > m * 60000) startScreensaver();
     if (todayStr() !== lastDay) { lastDay = todayStr(); goToday(); }
   }, 1000 * 15);
   setInterval(fetchWeather, 30 * 60 * 1000);
@@ -2351,6 +2647,8 @@
   fetchWeather();
   setInterval(renderClock, 1000);
   icalRemap();
+  if (openRecipeId() && recipeById(openRecipeId())) openRecipe(openRecipeId());
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && recipeOpen()) keepAwake(true); });
   cloudInit();
   setInterval(cloudPull, 15000);
   setInterval(() => icalRefresh(), 15 * 60 * 1000);
