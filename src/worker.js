@@ -354,15 +354,17 @@ async function anylistSync(env, { force = false } = {}) {
 }
 
 async function anylistSyncOnce(db, env, board, version, cfg) {
-  const lists = Array.isArray(board.lists) ? board.lists : [];
-  const cl = lists.find(l => l.id === cfg.listId) || lists.find(l => /grocer/i.test(l.name || ''));
-  if (!cl) throw new ALError('Pick which Calendora list to sync in Settings');
-  cl.items = Array.isArray(cl.items) ? cl.items : [];
+  if (!Array.isArray(board.lists)) board.lists = [];
+  const lists = board.lists;
   const t = await alTokens(db, env);
   const alists = alDecodeLists(await alPost(db, env, t, 'data/user-data/get'));
   const wantName = String(cfg.listName || 'Groceries').trim().toLowerCase();
   const al = alists.find(l => (l.name || '').trim().toLowerCase() === wantName);
   if (!al) throw new ALError(`No AnyList list called “${cfg.listName || 'Groceries'}”. Your lists: ${alists.map(l => l.name).join(', ') || 'none'}`);
+  let cl = lists.find(l => l.id === cfg.listId) || lists.find(l => /grocer/i.test(l.name || '')) || lists.find(l => (l.name || '').trim().toLowerCase() === (al.name || '').trim().toLowerCase());
+  let created = false;
+  if (!cl) { cl = { id: `l${alId().slice(0, 12)}`, name: al.name || 'Groceries', emoji: '🛒', items: [] }; lists.unshift(cl); created = true; }
+  cl.items = Array.isArray(cl.items) ? cl.items : [];
 
   let map = null;
   try { map = JSON.parse((await getConfig(db, 'anylist_map')) || 'null'); } catch (e) { map = null; }
@@ -370,7 +372,7 @@ async function anylistSyncOnce(db, env, board, version, cfg) {
   const cById = new Map(cl.items.map(i => [i.id, i]));
   const aById = new Map(al.items.map(i => [i.id, i]));
   const ops = [], links = [], seenC = new Set(), seenA = new Set();
-  let changed = false, pulled = 0;
+  let changed = created, pulled = 0;
 
   for (const L of map.links) {
     const c = cById.get(L.c), a = aById.get(L.a);
