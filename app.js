@@ -1,0 +1,1386 @@
+/* Calendora — family wall calendar
+ * Vanilla JS, no build step. Data lives in localStorage; photos in IndexedDB.
+ */
+'use strict';
+(() => {
+  // ---------------------------------------------------------------- constants
+  const STORE_KEY = 'calendora.v1';
+  const COLORS = ['#F26B4F', '#F2A541', '#E3B505', '#5BBF8A', '#2BB3A3', '#3FA7D6', '#5C7CFA', '#9B6BDF', '#E56BB0', '#8D6E63'];
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const DOW_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const MON = MONTHS.map(m => m.slice(0, 3));
+  const MEAL_TYPES = [['breakfast', 'Breakfast', '🥞'], ['lunch', 'Lunch', '🥪'], ['dinner', 'Dinner', '🍝'], ['snack', 'Snack', '🍎']];
+  const TIMES_OF_DAY = [['morning', 'Morning', '🌅'], ['afternoon', 'Afternoon', '☀️'], ['evening', 'Evening', '🌙'], ['anytime', 'Anytime', '✨']];
+  const REPEAT_OPTS = [['none', 'Does not repeat'], ['daily', 'Every day'], ['weekdays', 'Every weekday (Mon–Fri)'], ['weekly', 'Weekly on…'], ['biweekly', 'Every 2 weeks'], ['monthly', 'Monthly'], ['yearly', 'Yearly']];
+  const CHORE_EMOJI = ['🛏️', '🪥', '🎒', '🧸', '🐱', '🐕', '🪴', '🍽️', '🗑️', '🧺', '📚', '🎹', '🧹', '🚿', '👕', '🥗', '🚗', '💪'];
+  const REWARD_EMOJI = ['🎬', '🍦', '📱', '🌙', '📖', '🎡', '🍕', '🎮', '🛝', '🎨', '🧁', '⚽'];
+  const LIST_EMOJI = ['🛒', '✅', '🧳', '🎁', '🏠', '📦', '🎉', '💊', '📝', '🐾'];
+  const SCENES = [
+    'radial-gradient(120% 90% at 20% 15%, #FFD3A5 0%, transparent 55%), radial-gradient(90% 80% at 85% 80%, #FD6585 0%, transparent 60%), linear-gradient(135deg, #2E1F47, #5B2A6E)',
+    'radial-gradient(100% 80% at 80% 10%, #A8E6CF 0%, transparent 55%), radial-gradient(90% 90% at 10% 90%, #3D84A8 0%, transparent 60%), linear-gradient(160deg, #0F2F3D, #1F5C5A)',
+    'radial-gradient(110% 80% at 15% 85%, #F9D976 0%, transparent 55%), radial-gradient(80% 70% at 85% 20%, #F39F86 0%, transparent 60%), linear-gradient(200deg, #3A1C32, #8C3B4A)',
+    'radial-gradient(120% 80% at 50% 0%, #C3E8FF 0%, transparent 55%), radial-gradient(90% 70% at 20% 100%, #6A82FB 0%, transparent 60%), linear-gradient(180deg, #1A2A6C, #2D3A8C)',
+    'radial-gradient(100% 90% at 90% 90%, #FFE29F 0%, transparent 55%), radial-gradient(90% 70% at 10% 10%, #7FD1AE 0%, transparent 60%), linear-gradient(120deg, #234E3A, #4F7A3A)',
+  ];
+
+  const ICONS = {
+    calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+    chores: '<rect x="3" y="3" width="18" height="18" rx="5"/><path d="M8 12.5l2.8 2.8L16.5 9"/>',
+    rewards: '<path d="M12 3.2l2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.6l-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z"/>',
+    lists: '<path d="M9.5 6.5H20M9.5 12H20M9.5 17.5H20"/><path d="M4 6.5l1 1 2-2M4 12l1 1 2-2M4 17.5l1 1 2-2"/>',
+    meals: '<path d="M7 3v7.5M4.5 3v4.5a2.5 2.5 0 0 0 5 0V3M7 10.5V21M17 21V3c-2.5 1.2-3.5 4-3.5 7.5V13H17"/>',
+    photos: '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 15.5l-4.5-4.5L7 20"/>',
+    settings: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
+    expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+    sleep: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
+    left: '<path d="M15 5l-7 7 7 7"/>',
+    right: '<path d="M9 5l7 7-7 7"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+    trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+    pin: '<path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z"/><circle cx="12" cy="10" r="2.3"/>',
+    repeat: '<path d="M4 12a7 7 0 0 1 12-5l2 2M20 12a7 7 0 0 1-12 5l-2-2"/><path d="M18 4v5h-5M6 20v-5h5"/>',
+    copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
+  };
+  const icon = (name, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+
+  // ---------------------------------------------------------------- helpers
+  const $ = (s, el = document) => el.querySelector(s);
+  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+  const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
+  const pad = n => String(n).padStart(2, '0');
+  const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+  const addDays = (d, n) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() + n); return x; };
+  const today = () => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), n.getDate()); };
+  const todayStr = () => ymd(today());
+  const toMin = t => { if (!t) return 0; const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+  const fromMin = m => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`;
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const daysBetween = (a, b) => Math.round((b - a) / 86400000);
+
+  function startOfWeek(d) {
+    const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const diff = (x.getDay() - state.settings.weekStart + 7) % 7;
+    return addDays(x, -diff);
+  }
+  const weekOrder = () => [0, 1, 2, 3, 4, 5, 6].map(i => (i + state.settings.weekStart) % 7);
+
+  function fmtTime(t) {
+    if (!t) return '';
+    const [h, m] = t.split(':').map(Number);
+    if (state.settings.use24h) return `${pad(h)}:${pad(m)}`;
+    const ap = h < 12 ? 'am' : 'pm';
+    const hh = h % 12 || 12;
+    return m ? `${hh}:${pad(m)}${ap}` : `${hh}${ap}`;
+  }
+  function fmtHourLabel(h) {
+    if (state.settings.use24h) return `${pad(h)}:00`;
+    return `${h % 12 || 12} ${h < 12 || h === 24 ? 'AM' : 'PM'}`;
+  }
+  const initials = name => (name || '?').trim().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const memberById = id => state.members.find(m => m.id === id);
+  function avatar(m, size = '') {
+    if (!m) return `<span class="avatar ${size}" style="--c:#A9A4B5">★</span>`;
+    return `<span class="avatar ${size}" style="--c:${m.color}">${m.emoji ? esc(m.emoji) : esc(initials(m.name))}</span>`;
+  }
+
+  // ---------------------------------------------------------------- state
+  function defaults() {
+    return {
+      version: 1,
+      members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [],
+      hidden: [],
+      settings: { weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true },
+      ui: { view: 'calendar', calView: 'week', listId: null },
+    };
+  }
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      if (raw) {
+        const s = JSON.parse(raw);
+        const d = defaults();
+        return { ...d, ...s, settings: { ...d.settings, ...(s.settings || {}) }, ui: { ...d.ui, ...(s.ui || {}) } };
+      }
+    } catch (e) { console.warn('Calendora: could not read saved data', e); }
+    return seed(defaults());
+  }
+
+  let saveTimer;
+  function save() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+      catch (e) { toast('Could not save — browser storage is full'); }
+    }, 120);
+  }
+
+  function seed(s) {
+    const t = today();
+    const D = n => ymd(addDays(t, n));
+    const sun = addDays(t, -t.getDay());
+    const W = n => ymd(addDays(sun, n));
+    s.members = [
+      { id: 'm1', name: 'Mom', color: '#F26B4F' },
+      { id: 'm2', name: 'Dad', color: '#3FA7D6' },
+      { id: 'm3', name: 'Emma', color: '#9B6BDF' },
+      { id: 'm4', name: 'Leo', color: '#5BBF8A' },
+    ];
+    s.events = [
+      { title: 'School drop-off', date: W(1), startTime: '07:45', endTime: '08:15', recur: 'weekdays', memberIds: ['m2'] },
+      { title: 'Yoga class', date: W(1), startTime: '06:30', endTime: '07:30', recur: 'weekly', recurDays: [1, 3, 5], memberIds: ['m1'] },
+      { title: 'Soccer practice', date: W(2), startTime: '16:30', endTime: '18:00', recur: 'weekly', recurDays: [2, 4], memberIds: ['m4'], location: 'Riverside Park' },
+      { title: 'Piano lesson', date: W(3), startTime: '15:30', endTime: '16:15', recur: 'weekly', recurDays: [3], memberIds: ['m3'] },
+      { title: 'Trash & recycling', date: W(3), allDay: true, recur: 'weekly', recurDays: [3], memberIds: ['m2'] },
+      { title: 'Dentist', date: D(2), startTime: '10:00', endTime: '11:00', memberIds: ['m3', 'm1'], location: 'Bright Smiles Dental' },
+      { title: 'Parent–teacher conference', date: D(4), startTime: '17:30', endTime: '18:15', memberIds: ['m1', 'm2'] },
+      { title: 'Family movie night 🍿', date: W(5), startTime: '19:00', endTime: '21:00', recur: 'weekly', recurDays: [5], memberIds: [] },
+      { title: 'Swim class', date: W(6), startTime: '09:30', endTime: '10:30', recur: 'weekly', recurDays: [6], memberIds: ['m3', 'm4'] },
+      { title: 'Farmers market', date: W(6), startTime: '11:00', endTime: '12:30', recur: 'weekly', recurDays: [6], memberIds: [] },
+      { title: 'Grandma visiting', date: D(6), endDate: D(8), allDay: true, memberIds: [] },
+      { title: 'Leo’s birthday 🎂', date: D(11), allDay: true, recur: 'yearly', memberIds: ['m4'] },
+      { title: 'Book club', date: D(-3), startTime: '19:30', endTime: '21:00', recur: 'monthly', memberIds: ['m1'] },
+      { title: 'Team lunch', date: D(1), startTime: '12:00', endTime: '13:00', memberIds: ['m2'], location: 'Downtown' },
+    ].map(e => ({ id: uid(), endDate: null, allDay: false, startTime: '', endTime: '', recur: 'none', recurDays: [], until: null, notes: '', location: '', exdates: [], ...e }));
+
+    s.chores = [
+      { title: 'Make bed', emoji: '🛏️', memberId: 'm3', time: 'morning', stars: 1, repeat: 'daily' },
+      { title: 'Brush teeth', emoji: '🪥', memberId: 'm3', time: 'morning', stars: 1, repeat: 'daily' },
+      { title: 'Practice piano', emoji: '🎹', memberId: 'm3', time: 'afternoon', stars: 2, repeat: 'daily' },
+      { title: 'Pack backpack', emoji: '🎒', memberId: 'm3', time: 'evening', stars: 1, repeat: 'weekly', days: [0, 1, 2, 3, 4] },
+      { title: 'Feed the cat', emoji: '🐱', memberId: 'm4', time: 'morning', stars: 1, repeat: 'daily' },
+      { title: 'Make bed', emoji: '🛏️', memberId: 'm4', time: 'morning', stars: 1, repeat: 'daily' },
+      { title: 'Read 20 minutes', emoji: '📚', memberId: 'm4', time: 'anytime', stars: 2, repeat: 'daily' },
+      { title: 'Tidy toys', emoji: '🧸', memberId: 'm4', time: 'evening', stars: 2, repeat: 'daily' },
+      { title: 'Water plants', emoji: '🪴', memberId: 'm1', time: 'anytime', stars: 1, repeat: 'weekly', days: [1, 4] },
+      { title: 'Meal prep', emoji: '🥗', memberId: 'm1', time: 'afternoon', stars: 2, repeat: 'weekly', days: [0] },
+      { title: 'Laundry', emoji: '🧺', memberId: 'm1', time: 'anytime', stars: 2, repeat: 'weekly', days: [2, 6] },
+      { title: 'Unload dishwasher', emoji: '🍽️', memberId: 'm2', time: 'morning', stars: 1, repeat: 'daily' },
+      { title: 'Walk the dog', emoji: '🐕', memberId: 'm2', time: 'evening', stars: 1, repeat: 'daily' },
+      { title: 'Take out trash', emoji: '🗑️', memberId: 'm2', time: 'evening', stars: 1, repeat: 'weekly', days: [2] },
+    ].map(c => ({ id: uid(), days: [], date: null, ...c }));
+
+    // some history so the stars & rewards have something to show
+    for (let i = -6; i <= 0; i++) {
+      const ds = D(i);
+      const dd = parse(ds);
+      s.choreDone[ds] = {};
+      s.chores.forEach((c, idx) => {
+        if (!choreOnRaw(c, ds, dd)) return;
+        if (i < 0 ? (idx + i) % 4 !== 0 : idx % 3 === 0) s.choreDone[ds][c.id] = { m: c.memberId, s: c.stars };
+      });
+    }
+
+    s.lists = [
+      { id: uid(), name: 'Groceries', emoji: '🛒', items: ['Milk', 'Eggs', 'Bananas', 'Sourdough bread', 'Chicken thighs', 'Baby spinach', 'Cheddar', 'Coffee beans', 'Taco shells'] },
+      { id: uid(), name: 'To-Do', emoji: '✅', items: ['Schedule car service', 'Return library books', 'Buy a birthday gift for Leo', 'Call the plumber'] },
+      { id: uid(), name: 'Weekend packing', emoji: '🧳', items: ['Swimsuits', 'Sunscreen', 'Chargers', 'Snacks for the car'] },
+    ].map(l => ({ ...l, items: l.items.map((text, i) => ({ id: uid(), text, done: i === 1 })) }));
+
+    const dinners = ['Roast chicken', 'Spaghetti & meatballs', 'Tacos', 'Veggie stir-fry', 'Grilled salmon', 'Homemade pizza', 'Breakfast for dinner'];
+    for (let i = 0; i < 7; i++) {
+      const m = { dinner: dinners[i] };
+      if (i === 0 || i === 6) m.breakfast = 'Pancakes';
+      if (i >= 1 && i <= 5) m.lunch = i % 2 ? 'Turkey wraps' : 'Leftovers';
+      if (i === 3) m.snack = 'Apple slices & PB';
+      s.meals[W(i)] = m;
+    }
+
+    s.rewards = [
+      { title: 'Pick the movie', emoji: '🎬', cost: 5 },
+      { title: '30 min screen time', emoji: '📱', cost: 8 },
+      { title: 'Ice cream trip', emoji: '🍦', cost: 10 },
+      { title: 'Stay up 30 min late', emoji: '🌙', cost: 12 },
+      { title: 'Choose a new book', emoji: '📖', cost: 20 },
+      { title: 'Day trip of your choice', emoji: '🎡', cost: 50 },
+    ].map(r => ({ id: uid(), ...r }));
+    return s;
+  }
+
+  let state = load();
+  const ui = {
+    cursor: today(),       // calendar focus date
+    choreDate: today(),
+    mealWeek: today(),
+    weather: null,
+  };
+
+  // ---------------------------------------------------------------- recurrence
+  function occursOn(ev, ds, dd) {
+    if (ds < ev.date) return false;
+    if (ev.exdates && ev.exdates.includes(ds)) return false;
+    if (ev.until && ds > ev.until) return false;
+    const start = parse(ev.date);
+    switch (ev.recur || 'none') {
+      case 'none': return ev.allDay && ev.endDate ? ds <= ev.endDate : ds === ev.date;
+      case 'daily': return true;
+      case 'weekdays': return dd.getDay() > 0 && dd.getDay() < 6;
+      case 'weekly': return (ev.recurDays && ev.recurDays.length ? ev.recurDays : [start.getDay()]).includes(dd.getDay());
+      case 'biweekly': return dd.getDay() === start.getDay() && (daysBetween(start, dd) / 7) % 2 === 0;
+      case 'monthly': return dd.getDate() === start.getDate();
+      case 'yearly': return dd.getDate() === start.getDate() && dd.getMonth() === start.getMonth();
+      default: return false;
+    }
+  }
+  function isVisible(ev) {
+    if (!ev.memberIds || !ev.memberIds.length) return true;
+    return ev.memberIds.some(id => !state.hidden.includes(id) && memberById(id)) || ev.memberIds.every(id => !memberById(id));
+  }
+  let dayCache = new Map();
+  function eventsOn(ds) {
+    if (dayCache.has(ds)) return dayCache.get(ds);
+    const dd = parse(ds);
+    const list = state.events.filter(e => isVisible(e) && occursOn(e, ds, dd))
+      .sort((a, b) => (b.allDay - a.allDay) || toMin(a.startTime) - toMin(b.startTime) || a.title.localeCompare(b.title));
+    dayCache.set(ds, list);
+    return list;
+  }
+  const evColor = ev => { const m = (ev.memberIds || []).map(memberById).find(Boolean); return m ? m.color : '#8E8AA0'; };
+  const evDots = ev => (ev.memberIds || []).map(memberById).filter(Boolean).map(m => `<i style="--c:${m.color}" title="${esc(m.name)}"></i>`).join('');
+  function isPast(ev, ds) {
+    const t = todayStr();
+    if (ds < t) return true;
+    if (ds > t || ev.allDay) return false;
+    const n = new Date();
+    return toMin(ev.endTime || ev.startTime) < n.getHours() * 60 + n.getMinutes();
+  }
+  function timeRange(ev) {
+    if (ev.allDay) return 'All day';
+    return ev.endTime ? `${fmtTime(ev.startTime)} – ${fmtTime(ev.endTime)}` : fmtTime(ev.startTime);
+  }
+
+  // ---------------------------------------------------------------- chores & stars
+  function choreOnRaw(c, ds, dd) {
+    if (c.repeat === 'once') return c.date === ds;
+    if (c.repeat === 'weekly') return (c.days || []).includes(dd.getDay());
+    return true; // daily
+  }
+  const choreOn = (c, ds) => choreOnRaw(c, ds, parse(ds));
+  function earned(mid) {
+    let n = 0;
+    for (const day of Object.values(state.choreDone)) for (const v of Object.values(day)) if (v && v.m === mid) n += v.s || 0;
+    return n;
+  }
+  const spent = mid => state.redemptions.filter(r => r.memberId === mid).reduce((a, r) => a + r.cost, 0);
+  const balance = mid => earned(mid) - spent(mid);
+
+  // ---------------------------------------------------------------- photos (IndexedDB)
+  const photoDB = {
+    db: null,
+    open() {
+      if (this.db) return Promise.resolve(this.db);
+      return new Promise((res, rej) => {
+        const r = indexedDB.open('calendora', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('photos', { keyPath: 'id' });
+        r.onsuccess = () => { this.db = r.result; res(this.db); };
+        r.onerror = () => rej(r.error);
+      });
+    },
+    async tx(mode, fn) {
+      const db = await this.open();
+      return new Promise((res, rej) => {
+        const t = db.transaction('photos', mode);
+        const req = fn(t.objectStore('photos'));
+        t.oncomplete = () => res(req && req.result);
+        t.onerror = () => rej(t.error);
+      });
+    },
+    all() { return this.tx('readonly', s => s.getAll()); },
+    put(p) { return this.tx('readwrite', s => s.put(p)); },
+    del(id) { return this.tx('readwrite', s => s.delete(id)); },
+  };
+  const photoUrls = new Map();
+  async function getPhotos() {
+    try {
+      const list = await photoDB.all();
+      list.sort((a, b) => a.added - b.added);
+      return list.map(p => {
+        if (!photoUrls.has(p.id)) photoUrls.set(p.id, URL.createObjectURL(p.blob));
+        return { id: p.id, url: photoUrls.get(p.id) };
+      });
+    } catch (e) { return []; }
+  }
+  async function resizeImage(file, max = 1920) {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * scale);
+    c.height = Math.round(bmp.height * scale);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    return new Promise(res => c.toBlob(res, 'image/jpeg', 0.86));
+  }
+
+  // ---------------------------------------------------------------- render: shell
+  const NAV = [
+    ['calendar', 'Calendar'], ['chores', 'Chores'], ['rewards', 'Rewards'],
+    ['lists', 'Lists'], ['meals', 'Meals'], ['photos', 'Photos'],
+  ];
+  function renderSidebar() {
+    $('#sidebar').innerHTML = `
+      <div class="logo" title="Calendora"><span></span></div>
+      ${NAV.map(([v, label]) => `<button class="nav-btn ${state.ui.view === v ? 'active' : ''}" data-action="view" data-v="${v}">${icon(v)}<span>${label}</span></button>`).join('')}
+      <div class="nav-spacer"></div>
+      <button class="nav-btn" data-action="sleep" title="Start the photo frame now">${icon('sleep')}<span>Frame</span></button>
+      <button class="nav-btn" data-action="fullscreen" title="Full screen">${icon('expand')}<span>Full</span></button>
+      <button class="nav-btn ${state.ui.view === 'settings' ? 'active' : ''}" data-action="view" data-v="settings">${icon('settings')}<span>Settings</span></button>`;
+  }
+
+  function renderClock() {
+    const n = new Date();
+    let h = n.getHours(); const m = n.getMinutes();
+    let txt;
+    if (state.settings.use24h) txt = `${pad(h)}:${pad(m)}`;
+    else txt = `${h % 12 || 12}:${pad(m)}<small>${h < 12 ? 'AM' : 'PM'}</small>`;
+    $('#clockTime').innerHTML = txt;
+    $('#clockDate').textContent = `${DOW_LONG[n.getDay()]}, ${MONTHS[n.getMonth()]} ${n.getDate()}`;
+  }
+
+  function renderMemberFilter() {
+    const el = $('#memberFilter');
+    if (state.ui.view !== 'calendar') { el.innerHTML = ''; return; }
+    el.innerHTML = state.members.map(m => `
+      <button class="mf-btn ${state.hidden.includes(m.id) ? 'off' : ''}" data-action="toggle-member" data-id="${m.id}" title="Show / hide ${esc(m.name)}">
+        ${avatar(m)}<span>${esc(m.name)}</span>
+      </button>`).join('');
+  }
+
+  function wIcon(code, day = 1) {
+    if (code === 0) return day ? '☀️' : '🌙';
+    if (code <= 2) return day ? '⛅' : '☁️';
+    if (code === 3) return '☁️';
+    if (code === 45 || code === 48) return '🌫️';
+    if (code >= 51 && code <= 57) return '🌦️';
+    if (code >= 61 && code <= 67) return '🌧️';
+    if (code >= 71 && code <= 77) return '🌨️';
+    if (code >= 80 && code <= 82) return '🌦️';
+    if (code === 85 || code === 86) return '🌨️';
+    if (code >= 95) return '⛈️';
+    return '🌡️';
+  }
+  function dailyWeather(ds) {
+    const w = ui.weather;
+    if (!w || !w.daily) return null;
+    const i = w.daily.time.indexOf(ds);
+    if (i < 0) return null;
+    return { icon: wIcon(w.daily.weather_code[i]), hi: Math.round(w.daily.temperature_2m_max[i]), lo: Math.round(w.daily.temperature_2m_min[i]) };
+  }
+  function renderWeather() {
+    const el = $('#weather');
+    const w = ui.weather;
+    if (!w || !w.current) { el.hidden = true; return; }
+    const d = dailyWeather(todayStr());
+    el.hidden = false;
+    el.innerHTML = `<span class="wx-icon">${wIcon(w.current.weather_code, w.current.is_day)}</span>
+      <span class="wx-temp">${Math.round(w.current.temperature_2m)}°</span>
+      ${d ? `<span class="wx-hilo">H ${d.hi}° · L ${d.lo}°</span>` : ''}`;
+    el.title = state.settings.weather ? state.settings.weather.name : '';
+  }
+  async function fetchWeather() {
+    const loc = state.settings.weather;
+    if (!loc) { ui.weather = null; renderWeather(); return; }
+    try {
+      const u = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}&current=temperature_2m,weather_code,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=14&timezone=auto&temperature_unit=${state.settings.tempUnit}`;
+      const r = await fetch(u);
+      if (!r.ok) throw new Error(r.status);
+      ui.weather = await r.json();
+      renderWeather();
+      if (state.ui.view === 'calendar' && state.ui.calView === 'week') renderView();
+    } catch (e) { console.warn('Weather unavailable', e); }
+  }
+
+  function render() {
+    dayCache = new Map();
+    renderSidebar();
+    renderClock();
+    renderMemberFilter();
+    renderWeather();
+    renderView();
+  }
+  function renderView() {
+    dayCache = new Map();
+    const fn = { calendar: renderCalendar, chores: renderChores, rewards: renderRewards, lists: renderLists, meals: renderMeals, photos: renderPhotos, settings: renderSettings }[state.ui.view] || renderCalendar;
+    $('#view').className = `view view-${state.ui.view}`;
+    fn();
+    $('#fab').hidden = state.ui.view === 'settings';
+  }
+
+  // ---------------------------------------------------------------- calendar
+  function calTitle() {
+    const c = ui.cursor;
+    switch (state.ui.calView) {
+      case 'month': return `${MONTHS[c.getMonth()]} <span class="muted">${c.getFullYear()}</span>`;
+      case 'week': {
+        const s = startOfWeek(c), e = addDays(s, 6);
+        if (s.getMonth() === e.getMonth()) return `${MONTHS[s.getMonth()]} ${s.getDate()} – ${e.getDate()} <span class="muted">${e.getFullYear()}</span>`;
+        return `${MON[s.getMonth()]} ${s.getDate()} – ${MON[e.getMonth()]} ${e.getDate()} <span class="muted">${e.getFullYear()}</span>`;
+      }
+      case 'day': return `${DOW_LONG[c.getDay()]}, ${MONTHS[c.getMonth()]} ${c.getDate()}`;
+      default: return `Upcoming <span class="muted">from ${MON[c.getMonth()]} ${c.getDate()}</span>`;
+    }
+  }
+  function renderCalendar() {
+    const v = state.ui.calView;
+    $('#toolbar').innerHTML = `
+      <div class="nav-group">
+        <button class="icon-btn" data-action="nav" data-dir="-1" aria-label="Previous">${icon('left')}</button>
+        <button class="btn" data-action="today">Today</button>
+        <button class="icon-btn" data-action="nav" data-dir="1" aria-label="Next">${icon('right')}</button>
+      </div>
+      <h1>${calTitle()}</h1>
+      <div class="seg" role="tablist">
+        ${[['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['schedule', 'Schedule']].map(([k, l]) => `<button class="${v === k ? 'on' : ''}" data-action="calview" data-v="${k}">${l}</button>`).join('')}
+      </div>`;
+    ({ month: renderMonth, week: renderWeek, day: renderDay, schedule: renderSchedule })[v]();
+  }
+
+  function chip(e, ds) {
+    const c = evColor(e);
+    const past = isPast(e, ds) ? 'past' : '';
+    if (e.allDay) return `<div class="chip allday ${past}" style="--c:${c}" data-action="edit-event" data-id="${e.id}" data-date="${ds}">${esc(e.title)}</div>`;
+    return `<div class="chip ${past}" style="--c:${c}" data-action="edit-event" data-id="${e.id}" data-date="${ds}"><i></i><b>${fmtTime(e.startTime)}</b><span>${esc(e.title)}</span></div>`;
+  }
+
+  function renderMonth() {
+    const cur = ui.cursor;
+    const first = new Date(cur.getFullYear(), cur.getMonth(), 1);
+    const gs = startOfWeek(first);
+    const dim = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).getDate();
+    const lead = daysBetween(gs, first);
+    const rows = Math.ceil((lead + dim) / 7);
+    const max = rows > 5 ? 3 : 4;
+    const t = todayStr();
+    let cells = '';
+    for (let i = 0; i < rows * 7; i++) {
+      const d = addDays(gs, i), ds = ymd(d), evs = eventsOn(ds);
+      cells += `<div class="mcell ${d.getMonth() !== cur.getMonth() ? 'out' : ''} ${ds === t ? 'today' : ''}" data-action="goto-day" data-date="${ds}">
+        <div class="mnum">${d.getDate()}</div>
+        <div class="mevents">${evs.slice(0, max).map(e => chip(e, ds)).join('')}${evs.length > max ? `<div class="more">+${evs.length - max} more</div>` : ''}</div>
+      </div>`;
+    }
+    $('#view').innerHTML = `<div class="month card">
+      <div class="month-head">${weekOrder().map(i => `<div>${DOW[i]}</div>`).join('')}</div>
+      <div class="month-grid" style="--rows:${rows}">${cells}</div></div>`;
+  }
+
+  function evCard(e, ds) {
+    const c = evColor(e);
+    return `<div class="evcard ${e.allDay ? 'allday' : ''} ${isPast(e, ds) ? 'past' : ''}" style="--c:${c}" data-action="edit-event" data-id="${e.id}" data-date="${ds}">
+      <div class="evtitle">${esc(e.title)}</div>
+      <div class="evmeta">${timeRange(e)}${e.recur && e.recur !== 'none' ? ` ${icon('repeat', 'tiny')}` : ''}</div>
+      ${e.memberIds && e.memberIds.length > 1 ? `<div class="evdots">${evDots(e)}</div>` : ''}
+    </div>`;
+  }
+
+  function renderWeek() {
+    const ws = startOfWeek(ui.cursor), t = todayStr();
+    let cols = '';
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(ws, i), ds = ymd(d), evs = eventsOn(ds);
+      const wx = dailyWeather(ds);
+      const meal = state.settings.showMeals && state.meals[ds] && state.meals[ds].dinner;
+      cols += `<div class="wcol ${ds === t ? 'today' : ''} ${ds < t ? 'pastday' : ''}">
+        <div class="whead" data-action="goto-day" data-date="${ds}">
+          <span class="wdow">${DOW[d.getDay()]}</span><span class="wnum">${d.getDate()}</span>
+          ${wx ? `<span class="wwx">${wx.icon} ${wx.hi}°</span>` : ''}
+        </div>
+        <div class="wbody" data-action="new-event" data-date="${ds}">
+          ${evs.map(e => evCard(e, ds)).join('') || '<div class="wempty">Tap to add</div>'}
+        </div>
+        ${state.settings.showMeals ? `<div class="wmeal ${meal ? '' : 'none'}" data-action="edit-meal" data-date="${ds}" data-type="dinner">🍽️ ${meal ? esc(meal) : 'Add dinner'}</div>` : ''}
+      </div>`;
+    }
+    $('#view').innerHTML = `<div class="week">${cols}</div>`;
+  }
+
+  function layoutLanes(items) {
+    const out = []; let cluster = []; let end = -1;
+    const flush = () => {
+      const lanes = [];
+      cluster.forEach(it => {
+        let l = lanes.findIndex(e => e <= it.s);
+        if (l < 0) { l = lanes.length; lanes.push(it.e); } else lanes[l] = it.e;
+        it.lane = l;
+      });
+      cluster.forEach(it => { it.lanes = lanes.length; });
+      out.push(...cluster); cluster = []; end = -1;
+    };
+    items.sort((a, b) => a.s - b.s || b.e - a.e).forEach(it => {
+      if (cluster.length && it.s >= end) flush();
+      cluster.push(it); end = Math.max(end, it.e);
+    });
+    if (cluster.length) flush();
+    return out;
+  }
+
+  const HOUR_H = 64;
+  function renderDay() {
+    const ds = ymd(ui.cursor), evs = eventsOn(ds);
+    const visible = state.members.filter(m => !state.hidden.includes(m.id));
+    const hasFamily = evs.some(e => !e.memberIds.length || e.memberIds.every(id => !memberById(id)));
+    const columns = [...(hasFamily || !visible.length ? [{ id: '', name: 'Everyone', color: '#8E8AA0', family: true }] : []), ...visible];
+    const inCol = (e, col) => col.family ? (!e.memberIds.length || e.memberIds.every(id => !memberById(id))) : e.memberIds.includes(col.id);
+
+    let s = state.settings.dayStart, en = state.settings.dayEnd;
+    evs.forEach(e => { if (!e.allDay) { s = Math.min(s, Math.floor(toMin(e.startTime) / 60)); en = Math.max(en, Math.ceil(toMin(e.endTime || e.startTime) / 60)); } });
+    en = Math.min(24, Math.max(en, s + 1));
+
+    const allDay = evs.filter(e => e.allDay);
+    const head = columns.map(c => `<div class="dname">${c.family ? '<span class="avatar" style="--c:#A9A4B5">★</span>' : avatar(c)}<span>${esc(c.name)}</span></div>`).join('');
+    const allRow = allDay.length ? `<div class="dallday" style="--cols:${columns.length}"><div class="dlabel">All day</div>${columns.map(c => `<div>${allDay.filter(e => inCol(e, c)).map(e => chip(e, ds)).join('')}</div>`).join('')}</div>` : '';
+
+    let times = '';
+    for (let h = s; h < en; h++) times += `<div class="dt">${h === s ? '' : fmtHourLabel(h)}</div>`;
+
+    const body = columns.map(c => {
+      const items = layoutLanes(evs.filter(e => !e.allDay && inCol(e, c)).map(e => {
+        const st = toMin(e.startTime); let et = toMin(e.endTime || e.startTime); if (et <= st) et = st + 30;
+        return { e, s: st, e2: et, e: et, ev: e };
+      }));
+      return `<div class="dcol" data-action="new-event-at" data-date="${ds}" data-member="${c.id}">
+        ${items.map(it => {
+          const top = (it.s - s * 60) / 60 * HOUR_H;
+          const h = Math.max(26, (it.e - it.s) / 60 * HOUR_H - 2);
+          const w = 100 / it.lanes;
+          const ev = it.ev;
+          return `<div class="dev ${isPast(ev, ds) ? 'past' : ''} ${h < 44 ? 'short' : ''}" style="--c:${evColor(ev)};top:${top}px;height:${h}px;left:calc(${it.lane * w}% + 3px);width:calc(${w}% - 6px)" data-action="edit-event" data-id="${ev.id}" data-date="${ds}">
+            <div class="evtitle">${esc(ev.title)}</div><div class="evmeta">${timeRange(ev)}</div>
+            ${ev.location && h >= 70 ? `<div class="evloc">${icon('pin', 'tiny')} ${esc(ev.location)}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>`;
+    }).join('');
+
+    $('#view').innerHTML = `<div class="day card" style="--hh:${HOUR_H}px">
+      <div class="dhead" style="--cols:${columns.length}"><div></div>${head}</div>
+      ${allRow}
+      <div class="dscroll" id="dscroll">
+        <div class="dgrid" style="--cols:${columns.length};height:${(en - s) * HOUR_H}px" data-start="${s}">
+          <div class="dtimes">${times}</div>${body}
+          ${ds === todayStr() ? '<div class="nowline" id="nowline"></div>' : ''}
+        </div>
+      </div></div>`;
+    positionNowLine();
+    const sc = $('#dscroll');
+    const n = new Date();
+    const firstTimed = evs.find(e => !e.allDay);
+    const focusMin = ds === todayStr() ? n.getHours() * 60 + n.getMinutes() - 90 : (firstTimed ? toMin(firstTimed.startTime) - 30 : 8 * 60);
+    sc.scrollTop = Math.max(0, (focusMin - s * 60) / 60 * HOUR_H);
+  }
+  function positionNowLine() {
+    const nl = $('#nowline'); if (!nl) return;
+    const s = Number(nl.parentElement.dataset.start);
+    const n = new Date();
+    const m = n.getHours() * 60 + n.getMinutes();
+    nl.style.top = `${(m - s * 60) / 60 * HOUR_H}px`;
+    nl.hidden = m < s * 60;
+  }
+
+  function renderSchedule() {
+    const t = todayStr();
+    let h = '';
+    for (let i = 0; i < 28; i++) {
+      const d = addDays(ui.cursor, i), ds = ymd(d), evs = eventsOn(ds);
+      if (!evs.length && ds !== t) continue;
+      h += `<div class="sday ${ds === t ? 'today' : ''}">
+        <div class="sdate" data-action="goto-day" data-date="${ds}">
+          <span class="sdow">${ds === t ? 'Today' : DOW[d.getDay()]}</span><span class="snum">${d.getDate()}</span><span class="smon">${MON[d.getMonth()]}</span>
+        </div>
+        <div class="slist">${evs.length ? evs.map(e => `
+          <div class="srow ${isPast(e, ds) ? 'past' : ''}" style="--c:${evColor(e)}" data-action="edit-event" data-id="${e.id}" data-date="${ds}">
+            <div class="stime">${e.allDay ? 'All day' : `${fmtTime(e.startTime)}${e.endTime ? `<small>${fmtTime(e.endTime)}</small>` : ''}`}</div>
+            <div class="sbar"></div>
+            <div class="sinfo"><div class="stitle">${esc(e.title)}</div>${e.location ? `<div class="sloc">${icon('pin', 'tiny')} ${esc(e.location)}</div>` : ''}</div>
+            <div class="savatars">${(e.memberIds || []).map(memberById).filter(Boolean).map(m => avatar(m, 'sm')).join('')}</div>
+          </div>`).join('') : '<div class="empty-sm">Nothing planned — enjoy the day!</div>'}
+        </div></div>`;
+    }
+    $('#view').innerHTML = `<div class="schedule card">${h || '<div class="empty">No upcoming events.</div>'}</div>`;
+  }
+
+  // ---------------------------------------------------------------- chores
+  function dateLabel(d) {
+    const diff = daysBetween(today(), d);
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Tomorrow';
+    if (diff === -1) return 'Yesterday';
+    return `${DOW_LONG[d.getDay()]}, ${MON[d.getMonth()]} ${d.getDate()}`;
+  }
+  function ring(pct, label) {
+    const r = 20, c = 2 * Math.PI * r;
+    return `<div class="ring"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="${r}" class="ring-bg"/><circle cx="24" cy="24" r="${r}" class="ring-fg" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct)}"/></svg><span>${label}</span></div>`;
+  }
+  function renderChores() {
+    const d = ui.choreDate, ds = ymd(d);
+    $('#toolbar').innerHTML = `
+      <div class="nav-group">
+        <button class="icon-btn" data-action="nav" data-dir="-1" aria-label="Previous day">${icon('left')}</button>
+        <button class="btn" data-action="today">Today</button>
+        <button class="icon-btn" data-action="nav" data-dir="1" aria-label="Next day">${icon('right')}</button>
+      </div>
+      <h1>${dateLabel(d)}${daysBetween(today(), d) && Math.abs(daysBetween(today(), d)) <= 1 ? ` <span class="muted">${MON[d.getMonth()]} ${d.getDate()}</span>` : ''}</h1>
+      <span class="spacer"></span>
+      <button class="btn primary" data-action="new-chore">${icon('plus')} Add chore</button>`;
+    const done = state.choreDone[ds] || {};
+    if (!state.members.length) { $('#view').innerHTML = emptyMembers(); return; }
+    $('#view').innerHTML = `<div class="chores">${state.members.map(m => {
+      const list = state.chores.filter(c => c.memberId === m.id && choreOn(c, ds));
+      const n = list.filter(c => done[c.id]).length;
+      const pct = list.length ? n / list.length : 0;
+      const groups = TIMES_OF_DAY.map(([k, label, ic]) => {
+        const items = list.filter(c => (c.time || 'anytime') === k);
+        if (!items.length) return '';
+        return `<div class="ctod">${ic} ${label}</div>` + items.map(c => `
+          <div class="chore ${done[c.id] ? 'done' : ''}" data-action="toggle-chore" data-id="${c.id}">
+            <span class="cemoji">${esc(c.emoji || '⭐')}</span>
+            <span class="ctext"><span class="ctitle">${esc(c.title)}</span><span class="cstars">${'★'.repeat(Math.min(c.stars || 0, 5))}</span></span>
+            <button class="mini-btn" data-action="edit-chore" data-id="${c.id}" aria-label="Edit chore">${icon('edit')}</button>
+            <span class="check"><svg viewBox="0 0 24 24"><path d="M6 12.5l4 4 8-9"/></svg></span>
+          </div>`).join('');
+      }).join('');
+      return `<div class="ccol ${list.length && n === list.length ? 'alldone' : ''}" style="--c:${m.color}" data-member="${m.id}">
+        <div class="chead">${avatar(m, 'lg')}
+          <div class="cwho"><div class="cname">${esc(m.name)}</div><div class="cstat">⭐ ${balance(m.id)} stars</div></div>
+          ${ring(pct, list.length ? `${n}/${list.length}` : '–')}
+        </div>
+        <div class="cbody">${groups || '<div class="empty-sm">Nothing to do today 🎉</div>'}
+          <button class="add-row" data-action="new-chore" data-member="${m.id}">${icon('plus')} Add</button>
+        </div>
+      </div>`;
+    }).join('')}</div>`;
+  }
+  function emptyMembers() {
+    return `<div class="empty card"><p>Add your family members first.</p><button class="btn primary" data-action="new-member">${icon('plus')} Add a family member</button></div>`;
+  }
+
+  function confetti(el) {
+    const colors = ['#F26B4F', '#F2A541', '#5BBF8A', '#3FA7D6', '#9B6BDF', '#E56BB0'];
+    const box = document.createElement('div');
+    box.className = 'confetti';
+    for (let i = 0; i < 36; i++) {
+      const p = document.createElement('i');
+      p.style.setProperty('--x', `${(Math.random() - 0.5) * 320}px`);
+      p.style.setProperty('--y', `${-80 - Math.random() * 220}px`);
+      p.style.setProperty('--r', `${Math.random() * 720 - 360}deg`);
+      p.style.background = colors[i % colors.length];
+      p.style.left = `${40 + Math.random() * 20}%`;
+      p.style.animationDelay = `${Math.random() * 0.15}s`;
+      box.appendChild(p);
+    }
+    el.appendChild(box);
+    setTimeout(() => box.remove(), 1600);
+  }
+
+  // ---------------------------------------------------------------- rewards
+  function renderRewards() {
+    $('#toolbar').innerHTML = `<h1>Rewards</h1><span class="muted sub">Earn stars by finishing chores, then trade them in.</span><span class="spacer"></span>
+      <button class="btn primary" data-action="new-reward">${icon('plus')} Add reward</button>`;
+    const recent = state.redemptions.slice(-8).reverse();
+    $('#view').innerHTML = `<div class="rewards">
+      <div class="star-row">${state.members.map(m => `
+        <div class="star-card" style="--c:${m.color}">${avatar(m, 'lg')}<div><div class="cname">${esc(m.name)}</div><div class="star-num">⭐ ${balance(m.id)}</div></div></div>`).join('')}
+      </div>
+      <div class="reward-grid">${state.rewards.map(r => `
+        <div class="reward card">
+          <button class="mini-btn corner" data-action="edit-reward" data-id="${r.id}" aria-label="Edit reward">${icon('edit')}</button>
+          <div class="remoji">${esc(r.emoji || '🎁')}</div>
+          <div class="rtitle">${esc(r.title)}</div>
+          <div class="rcost">⭐ ${r.cost}</div>
+          <button class="btn primary block" data-action="redeem" data-id="${r.id}">Redeem</button>
+        </div>`).join('') || '<div class="empty-sm">No rewards yet — add one!</div>'}
+      </div>
+      ${recent.length ? `<div class="history card"><h3>Recently redeemed</h3>${recent.map(r => { const m = memberById(r.memberId); return `<div class="hrow">${avatar(m, 'sm')}<span><b>${esc(m ? m.name : 'Someone')}</b> redeemed ${esc(r.title)}</span><span class="muted">−${r.cost} ⭐ · ${MON[parse(r.date).getMonth()]} ${parse(r.date).getDate()}</span></div>`; }).join('')}</div>` : ''}
+    </div>`;
+  }
+
+  // ---------------------------------------------------------------- lists
+  function renderLists() {
+    if (!state.lists.find(l => l.id === state.ui.listId)) state.ui.listId = state.lists[0] ? state.lists[0].id : null;
+    const list = state.lists.find(l => l.id === state.ui.listId);
+    $('#toolbar').innerHTML = `<h1>Lists</h1><span class="spacer"></span><button class="btn primary" data-action="new-list">${icon('plus')} New list</button>`;
+    const side = state.lists.map(l => {
+      const open = l.items.filter(i => !i.done).length;
+      return `<button class="list-tab ${l.id === state.ui.listId ? 'on' : ''}" data-action="pick-list" data-id="${l.id}"><span class="lemoji">${esc(l.emoji || '📝')}</span><span class="lname">${esc(l.name)}</span><span class="lcount">${open}</span></button>`;
+    }).join('');
+    let main = '<div class="empty-sm">Create a list to get started.</div>';
+    if (list) {
+      const open = list.items.filter(i => !i.done), done = list.items.filter(i => i.done);
+      const row = i => `<div class="litem ${i.done ? 'done' : ''}">
+          <button class="lcheck" data-action="toggle-item" data-id="${i.id}" aria-label="Toggle"><svg viewBox="0 0 24 24"><path d="M6 12.5l4 4 8-9"/></svg></button>
+          <span class="ltext" data-action="edit-item" data-id="${i.id}">${esc(i.text)}</span>
+          <button class="mini-btn" data-action="delete-item" data-id="${i.id}" aria-label="Remove">${icon('trash')}</button>
+        </div>`;
+      main = `<div class="list-head"><span class="lemoji big">${esc(list.emoji || '📝')}</span><h2>${esc(list.name)}</h2><span class="spacer"></span>
+          <button class="btn" data-action="edit-list" data-id="${list.id}">${icon('edit')} Edit</button></div>
+        <form class="add-item" data-form="add-item"><input name="text" placeholder="Add an item…" autocomplete="off" enterkeyhint="done" /><button class="btn primary" type="submit">Add</button></form>
+        <div class="litems">${open.map(row).join('') || '<div class="empty-sm">All done! ✨</div>'}
+          ${done.length ? `<div class="done-head"><span>Completed (${done.length})</span><button class="link-btn" data-action="clear-done">Clear completed</button></div>${done.map(row).join('')}` : ''}
+        </div>`;
+    }
+    $('#view').innerHTML = `<div class="lists"><div class="list-side card">${side}</div><div class="list-main card">${main}</div></div>`;
+  }
+
+  // ---------------------------------------------------------------- meals
+  function renderMeals() {
+    const ws = startOfWeek(ui.mealWeek), t = todayStr();
+    const e = addDays(ws, 6);
+    $('#toolbar').innerHTML = `
+      <div class="nav-group">
+        <button class="icon-btn" data-action="nav" data-dir="-1" aria-label="Previous week">${icon('left')}</button>
+        <button class="btn" data-action="today">This week</button>
+        <button class="icon-btn" data-action="nav" data-dir="1" aria-label="Next week">${icon('right')}</button>
+      </div>
+      <h1>Meal plan <span class="muted">${MON[ws.getMonth()]} ${ws.getDate()} – ${MON[e.getMonth()]} ${e.getDate()}</span></h1>
+      <span class="spacer"></span>
+      <button class="btn" data-action="copy-meals">${icon('copy')} Copy last week</button>`;
+    let h = `<div class="meals card"><div class="mg-corner"></div>`;
+    for (let i = 0; i < 7; i++) { const d = addDays(ws, i); h += `<div class="mg-day ${ymd(d) === t ? 'today' : ''}"><span>${DOW[d.getDay()]}</span><b>${d.getDate()}</b></div>`; }
+    MEAL_TYPES.forEach(([k, label, ic]) => {
+      h += `<div class="mg-type"><span>${ic}</span>${label}</div>`;
+      for (let i = 0; i < 7; i++) {
+        const ds = ymd(addDays(ws, i)); const v = state.meals[ds] && state.meals[ds][k];
+        h += `<div class="mg-cell ${v ? 'filled' : ''} ${ds === t ? 'today' : ''} t-${k}" data-action="edit-meal" data-date="${ds}" data-type="${k}">${v ? esc(v) : '<span class="plus">+</span>'}</div>`;
+      }
+    });
+    $('#view').innerHTML = h + '</div>';
+  }
+
+  // ---------------------------------------------------------------- photos
+  async function renderPhotos() {
+    $('#toolbar').innerHTML = `<h1>Photo frame</h1><span class="muted sub">Shown as a slideshow when the calendar sits idle.</span><span class="spacer"></span>
+      <button class="btn" data-action="sleep">${icon('sleep')} Start slideshow</button>
+      <button class="btn primary" data-action="upload-photos">${icon('plus')} Add photos</button>`;
+    const photos = await getPhotos();
+    if (state.ui.view !== 'photos') return;
+    $('#view').innerHTML = `<div class="photos">
+      ${photos.length ? `<div class="photo-grid">${photos.map(p => `<div class="photo" style="background-image:url('${p.url}')"><button class="mini-btn corner light" data-action="delete-photo" data-id="${p.id}" aria-label="Delete photo">${icon('trash')}</button></div>`).join('')}</div>`
+        : `<div class="empty card"><div class="scene-row">${SCENES.map(s => `<div class="scene" style="background:${s}"></div>`).join('')}</div>
+            <p>No photos yet — the frame will show these color scenes until you add your own.<br><span class="muted">Photos stay in this browser on this device.</span></p>
+            <button class="btn primary" data-action="upload-photos">${icon('plus')} Add photos</button></div>`}
+      <div class="frame-settings card">
+        <label class="field inline"><span>Start the frame after</span>
+          <select data-setting="screensaverMin" data-num="1">${[[0, 'Never'], [1, '1 minute'], [5, '5 minutes'], [10, '10 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour']].map(([v, l]) => `<option value="${v}" ${state.settings.screensaverMin === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <span class="muted">of no activity</span></label>
+      </div></div>`;
+  }
+
+  // ---------------------------------------------------------------- settings
+  function renderSettings() {
+    const s = state.settings;
+    $('#toolbar').innerHTML = `<h1>Settings</h1>`;
+    const opt = (v, l, cur) => `<option value="${v}" ${String(cur) === String(v) ? 'selected' : ''}>${l}</option>`;
+    $('#view').innerHTML = `<div class="settings">
+      <section class="card">
+        <div class="sec-head"><h3>Family</h3><button class="btn primary" data-action="new-member">${icon('plus')} Add member</button></div>
+        <div class="member-list">${state.members.map(m => `
+          <div class="member-row">${avatar(m, 'lg')}<span class="cname">${esc(m.name)}</span><span class="spacer"></span>
+            <button class="btn" data-action="edit-member" data-id="${m.id}">${icon('edit')} Edit</button></div>`).join('') || '<div class="empty-sm">No family members yet.</div>'}
+        </div>
+      </section>
+      <section class="card">
+        <h3>Display</h3>
+        <label class="field inline"><span>Week starts on</span><select data-setting="weekStart" data-num="1">${opt(0, 'Sunday', s.weekStart)}${opt(1, 'Monday', s.weekStart)}${opt(6, 'Saturday', s.weekStart)}</select></label>
+        <label class="field inline"><span>Clock</span><select data-setting="use24h" data-bool="1">${opt('false', '12-hour (3:30 PM)', s.use24h)}${opt('true', '24-hour (15:30)', s.use24h)}</select></label>
+        <label class="field inline"><span>Day view hours</span>
+          <select data-setting="dayStart" data-num="1">${[5, 6, 7, 8, 9].map(h => opt(h, fmtHourLabel(h), s.dayStart)).join('')}</select>
+          <span class="muted">to</span>
+          <select data-setting="dayEnd" data-num="1">${[18, 19, 20, 21, 22, 23, 24].map(h => opt(h, fmtHourLabel(h), s.dayEnd)).join('')}</select></label>
+        <label class="field inline"><span>Show dinner on the week view</span><select data-setting="showMeals" data-bool="1">${opt('true', 'Yes', s.showMeals)}${opt('false', 'No', s.showMeals)}</select></label>
+        <label class="field inline"><span>Photo frame starts after</span><select data-setting="screensaverMin" data-num="1">${[[0, 'Never'], [1, '1 minute'], [5, '5 minutes'], [10, '10 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour']].map(([v, l]) => opt(v, l, s.screensaverMin)).join('')}</select></label>
+      </section>
+      <section class="card">
+        <h3>Weather</h3>
+        <p class="muted">${s.weather ? `Showing weather for <b>${esc(s.weather.name)}</b>.` : 'Add a location to see the forecast in the header and on the week view.'}</p>
+        <form class="row" data-form="weather-search"><input name="q" placeholder="City or ZIP code" autocomplete="off" /><button class="btn" type="submit">Search</button>
+          <button class="btn" type="button" data-action="geo">📍 Use my location</button>
+          ${s.weather ? '<button class="btn ghost" type="button" data-action="clear-weather">Remove</button>' : ''}</form>
+        <div id="geoResults" class="geo-results"></div>
+        <label class="field inline"><span>Units</span><select data-setting="tempUnit">${opt('fahrenheit', '°F', s.tempUnit)}${opt('celsius', '°C', s.tempUnit)}</select></label>
+      </section>
+      <section class="card">
+        <h3>Your data</h3>
+        <p class="muted">Everything is saved in this browser. Export a backup to move it to another device.</p>
+        <div class="row wrap">
+          <button class="btn" data-action="export">Export backup</button>
+          <button class="btn" data-action="import">Import backup</button>
+          <button class="btn" data-action="reset-demo">Load demo family</button>
+          <button class="btn danger" data-action="clear-all">Start fresh</button>
+        </div>
+      </section>
+      <p class="muted center small">Calendora · works offline · no account needed</p>
+    </div>`;
+  }
+
+  // ---------------------------------------------------------------- modals
+  const modalRoot = $('#modalRoot');
+  let modalOpen = false;
+  function modal({ title, body, onSave, onDelete, saveLabel = 'Save', deleteLabel = 'Delete', onOpen, cls = '' }) {
+    modalRoot.innerHTML = `<div class="modal-back"><form class="modal ${cls}" novalidate>
+      <div class="mhead"><h2>${title}</h2><button type="button" class="icon-btn flat" data-close aria-label="Close">✕</button></div>
+      <div class="mbody">${body}</div>
+      <div class="mfoot">${onDelete ? `<button type="button" class="btn danger" data-del>${deleteLabel}</button>` : ''}<span class="spacer"></span>
+        <button type="button" class="btn ghost" data-close>Cancel</button>${onSave ? `<button type="submit" class="btn primary">${saveLabel}</button>` : ''}</div>
+    </form></div>`;
+    modalOpen = true;
+    const form = $('form', modalRoot);
+    form.addEventListener('submit', e => { e.preventDefault(); if (onSave && onSave(form) !== false) closeModal(); });
+    $$('[data-close]', modalRoot).forEach(b => b.addEventListener('click', closeModal));
+    $('.modal-back', modalRoot).addEventListener('pointerdown', e => { if (e.target.classList.contains('modal-back')) closeModal(); });
+    if (onDelete) $('[data-del]', modalRoot).addEventListener('click', () => { if (onDelete(form) !== false) closeModal(); });
+    if (onOpen) onOpen(form);
+    setTimeout(() => { const a = $('[autofocus]', form); if (a && !matchMedia('(pointer:coarse)').matches) a.focus(); }, 60);
+    return form;
+  }
+  function closeModal() { modalRoot.innerHTML = ''; modalOpen = false; }
+  function choice(title, text, options) {
+    modalRoot.innerHTML = `<div class="modal-back"><div class="modal small"><div class="mhead"><h2>${title}</h2></div>
+      <div class="mbody"><p>${text}</p><div class="choice-list">${options.map((o, i) => `<button class="btn ${o.cls || ''}" data-i="${i}">${o.label}</button>`).join('')}
+      <button class="btn ghost" data-i="-1">Cancel</button></div></div></div></div>`;
+    modalOpen = true;
+    $$('[data-i]', modalRoot).forEach(b => b.addEventListener('click', () => { const i = Number(b.dataset.i); closeModal(); if (i >= 0) options[i].fn(); }));
+  }
+  const fval = (form, name) => { const el = form.elements[name]; return el ? el.value.trim() : ''; };
+  const fall = (form, name) => $$(`[name="${name}"]:checked`, form).map(i => i.value);
+
+  function memberPicker(selected, multi = true, name = 'memberIds') {
+    return `<div class="pick-members">${state.members.map(m => `
+      <label class="mpick" style="--c:${m.color}"><input type="${multi ? 'checkbox' : 'radio'}" name="${name}" value="${m.id}" ${selected.includes(m.id) ? 'checked' : ''}>${avatar(m, 'sm')}<span>${esc(m.name)}</span></label>`).join('')}</div>`;
+  }
+  function dayPicker(selected, name) {
+    return `<div class="daypick">${weekOrder().map(i => `<label><input type="checkbox" name="${name}" value="${i}" ${selected.includes(i) ? 'checked' : ''}><span>${DOW[i].slice(0, 2)}</span></label>`).join('')}</div>`;
+  }
+  function emojiPicker(list, cur, name = 'emoji') {
+    return `<div class="emoji-pick">${list.map(e => `<label><input type="radio" name="${name}" value="${e}" ${e === cur ? 'checked' : ''}><span>${e}</span></label>`).join('')}</div>`;
+  }
+
+  function defaultStart(ds) {
+    if (ds !== todayStr()) return '09:00';
+    const n = new Date();
+    const m = Math.min(23 * 60, Math.ceil((n.getHours() * 60 + n.getMinutes() + 1) / 30) * 30);
+    return fromMin(m);
+  }
+
+  function eventModal(ev, occDate, preset = {}) {
+    const isNew = !ev;
+    const date = preset.date || ymd(ui.cursor);
+    const st = preset.startTime || defaultStart(date);
+    const e = ev ? { ...ev } : {
+      id: uid(), title: '', date, endDate: null, allDay: !!preset.allDay, startTime: st, endTime: fromMin(Math.min(toMin(st) + 60, 23 * 60 + 59)),
+      recur: 'none', recurDays: [], until: null, memberIds: preset.memberIds || [], location: '', notes: '', exdates: [],
+    };
+    const recurDays = e.recurDays && e.recurDays.length ? e.recurDays : [parse(e.date).getDay()];
+    modal({
+      title: isNew ? 'New event' : 'Edit event',
+      cls: 'event-modal',
+      body: `
+        <input class="title-input" name="title" placeholder="What’s happening?" value="${esc(e.title)}" autofocus required maxlength="120" />
+        <div class="field"><span>Who’s going?</span>${memberPicker(e.memberIds)}<small class="muted">Leave empty for the whole family.</small></div>
+        <label class="switch"><input type="checkbox" name="allDay" ${e.allDay ? 'checked' : ''}><span class="track"></span><span>All day</span></label>
+        <div class="row">
+          <label class="field"><span>${e.allDay ? 'Starts' : 'Date'}</span><input type="date" name="date" value="${e.date}" required></label>
+          <label class="field only-timed"><span>From</span><input type="time" name="startTime" value="${e.startTime || '09:00'}" step="300"></label>
+          <label class="field only-timed"><span>To</span><input type="time" name="endTime" value="${e.endTime || ''}" step="300"></label>
+          <label class="field only-allday"><span>Ends</span><input type="date" name="endDate" value="${e.endDate || e.date}"></label>
+        </div>
+        <div class="row">
+          <label class="field"><span>Repeat</span><select name="recur">${REPEAT_OPTS.map(([v, l]) => `<option value="${v}" ${e.recur === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label class="field only-repeat"><span>Until <small class="muted">(optional)</small></span><input type="date" name="until" value="${e.until || ''}"></label>
+        </div>
+        <div class="field only-weekly"><span>Repeat on</span>${dayPicker(recurDays, 'recurDays')}</div>
+        <label class="field"><span>Location</span><input name="location" value="${esc(e.location)}" placeholder="Add a place" maxlength="120"></label>
+        <label class="field"><span>Notes</span><textarea name="notes" rows="2" placeholder="Anything to remember?">${esc(e.notes)}</textarea></label>`,
+      onOpen(form) {
+        const sync = () => {
+          form.classList.toggle('is-allday', form.elements.allDay.checked);
+          form.classList.toggle('is-repeat', form.elements.recur.value !== 'none');
+          form.classList.toggle('is-weekly', form.elements.recur.value === 'weekly');
+        };
+        form.addEventListener('change', sync); sync();
+        form.elements.startTime.addEventListener('change', () => {
+          const sEl = form.elements.startTime, eEl = form.elements.endTime;
+          if (!eEl.value || toMin(eEl.value) <= toMin(sEl.value)) eEl.value = fromMin(Math.min(toMin(sEl.value) + 60, 23 * 60 + 59));
+        });
+      },
+      onSave(form) {
+        const title = fval(form, 'title');
+        if (!title) { form.elements.title.focus(); form.elements.title.classList.add('invalid'); return false; }
+        const allDay = form.elements.allDay.checked;
+        const out = {
+          ...e, title, allDay,
+          date: fval(form, 'date') || e.date,
+          memberIds: fall(form, 'memberIds'),
+          recur: fval(form, 'recur'),
+          recurDays: fall(form, 'recurDays').map(Number),
+          until: fval(form, 'until') || null,
+          location: fval(form, 'location'),
+          notes: fval(form, 'notes'),
+        };
+        if (allDay) {
+          out.startTime = ''; out.endTime = '';
+          const ed = fval(form, 'endDate');
+          out.endDate = ed && ed > out.date ? ed : null;
+        } else {
+          out.endDate = null;
+          out.startTime = fval(form, 'startTime') || '09:00';
+          let et = fval(form, 'endTime');
+          if (!et || toMin(et) <= toMin(out.startTime)) et = fromMin(Math.min(toMin(out.startTime) + 60, 23 * 60 + 59));
+          out.endTime = et;
+        }
+        if (out.recur !== 'weekly') out.recurDays = [];
+        else if (!out.recurDays.length) out.recurDays = [parse(out.date).getDay()];
+        if (isNew) state.events.push(out);
+        else state.events = state.events.map(x => x.id === out.id ? out : x);
+        save(); renderView();
+        toast(isNew ? 'Event added' : 'Event updated');
+      },
+      onDelete: isNew ? null : () => {
+        const del = () => { state.events = state.events.filter(x => x.id !== e.id); save(); renderView(); toast('Event deleted'); };
+        if (e.recur && e.recur !== 'none' && occDate) {
+          choice('Delete repeating event', `“${esc(e.title)}” repeats. What should be deleted?`, [
+            { label: 'Only this one', fn: () => { const x = state.events.find(x => x.id === e.id); x.exdates = [...(x.exdates || []), occDate]; save(); renderView(); toast('Event deleted'); } },
+            { label: 'This and all following', fn: () => { const x = state.events.find(x => x.id === e.id); if (occDate <= x.date) del(); else { x.until = ymd(addDays(parse(occDate), -1)); save(); renderView(); toast('Events deleted'); } } },
+            { label: 'All events in the series', cls: 'danger', fn: del },
+          ]);
+          return false;
+        }
+        del();
+      },
+    });
+  }
+
+  function choreModal(c, preset = {}) {
+    const isNew = !c;
+    const ch = c ? { ...c } : { id: uid(), title: '', emoji: '🧹', memberId: preset.memberId || (state.members[0] && state.members[0].id), time: 'anytime', stars: 1, repeat: 'daily', days: [], date: ymd(ui.choreDate) };
+    modal({
+      title: isNew ? 'New chore' : 'Edit chore',
+      body: `
+        <input class="title-input" name="title" placeholder="e.g. Feed the dog" value="${esc(ch.title)}" autofocus maxlength="80" />
+        <div class="field"><span>Icon</span>${emojiPicker(CHORE_EMOJI.includes(ch.emoji) ? CHORE_EMOJI : [ch.emoji, ...CHORE_EMOJI], ch.emoji)}</div>
+        <div class="field"><span>Who</span>${memberPicker([ch.memberId], false, 'memberId')}</div>
+        <div class="field"><span>Time of day</span><div class="seg wide">${TIMES_OF_DAY.map(([k, l, ic]) => `<label><input type="radio" name="time" value="${k}" ${ch.time === k ? 'checked' : ''}><span>${ic} ${l}</span></label>`).join('')}</div></div>
+        <div class="field"><span>Repeat</span><div class="seg wide">${[['daily', 'Every day'], ['weekly', 'Certain days'], ['once', 'Just once']].map(([k, l]) => `<label><input type="radio" name="repeat" value="${k}" ${ch.repeat === k ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div></div>
+        <div class="field only-weekly">${dayPicker(ch.days && ch.days.length ? ch.days : [1, 2, 3, 4, 5], 'days')}</div>
+        <label class="field only-once"><span>On</span><input type="date" name="date" value="${ch.date || ymd(ui.choreDate)}"></label>
+        <div class="field"><span>Stars earned</span><div class="star-pick">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="stars" value="${n}" ${ch.stars === n ? 'checked' : ''}><span>${'★'.repeat(n)}</span></label>`).join('')}</div></div>`,
+      onOpen(form) {
+        const sync = () => { const r = fall(form, 'repeat')[0]; form.classList.toggle('is-weekly', r === 'weekly'); form.classList.toggle('is-once', r === 'once'); };
+        form.addEventListener('change', sync); sync();
+      },
+      onSave(form) {
+        const title = fval(form, 'title');
+        if (!title) { form.elements.title.classList.add('invalid'); return false; }
+        const memberId = fall(form, 'memberId')[0];
+        if (!memberId) { toast('Pick who this chore is for'); return false; }
+        const out = { ...ch, title, memberId, emoji: fall(form, 'emoji')[0] || '⭐', time: fall(form, 'time')[0] || 'anytime', repeat: fall(form, 'repeat')[0] || 'daily', days: fall(form, 'days').map(Number), date: fval(form, 'date') || null, stars: Number(fall(form, 'stars')[0] || 1) };
+        if (out.repeat === 'weekly' && !out.days.length) { toast('Pick at least one day'); return false; }
+        if (isNew) state.chores.push(out); else state.chores = state.chores.map(x => x.id === out.id ? out : x);
+        save(); renderView(); toast(isNew ? 'Chore added' : 'Chore updated');
+      },
+      onDelete: isNew ? null : () => { state.chores = state.chores.filter(x => x.id !== ch.id); save(); renderView(); toast('Chore deleted'); },
+    });
+  }
+
+  function memberModal(m) {
+    const isNew = !m;
+    const used = state.members.map(x => x.color);
+    const mm = m ? { ...m } : { id: uid(), name: '', color: COLORS.find(c => !used.includes(c)) || COLORS[0], emoji: '' };
+    modal({
+      title: isNew ? 'Add family member' : `Edit ${esc(mm.name)}`,
+      body: `
+        <label class="field"><span>Name</span><input name="name" value="${esc(mm.name)}" autofocus maxlength="24" placeholder="e.g. Grandpa"></label>
+        <div class="field"><span>Color</span><div class="color-pick">${COLORS.map(c => `<label><input type="radio" name="color" value="${c}" ${c === mm.color ? 'checked' : ''}><span style="--c:${c}"></span></label>`).join('')}</div></div>
+        <label class="field"><span>Emoji instead of initials <small class="muted">(optional)</small></span><input name="emoji" value="${esc(mm.emoji || '')}" maxlength="4" placeholder="🦊"></label>`,
+      onSave(form) {
+        const name = fval(form, 'name');
+        if (!name) { form.elements.name.classList.add('invalid'); return false; }
+        const out = { ...mm, name, color: fall(form, 'color')[0] || mm.color, emoji: fval(form, 'emoji') };
+        if (isNew) state.members.push(out); else state.members = state.members.map(x => x.id === out.id ? out : x);
+        save(); render();
+      },
+      onDelete: isNew ? null : () => {
+        choice(`Remove ${esc(mm.name)}?`, 'Their chores will be deleted. Events they were in stay on the calendar.', [{
+          label: 'Remove', cls: 'danger', fn: () => {
+            state.members = state.members.filter(x => x.id !== mm.id);
+            state.chores = state.chores.filter(c => c.memberId !== mm.id);
+            state.events.forEach(e => { e.memberIds = e.memberIds.filter(id => id !== mm.id); });
+            state.hidden = state.hidden.filter(id => id !== mm.id);
+            save(); render();
+          },
+        }]);
+        return false;
+      },
+    });
+  }
+
+  function rewardModal(r) {
+    const isNew = !r;
+    const rr = r ? { ...r } : { id: uid(), title: '', emoji: '🎁', cost: 10 };
+    modal({
+      title: isNew ? 'New reward' : 'Edit reward',
+      body: `
+        <input class="title-input" name="title" placeholder="e.g. Pizza night" value="${esc(rr.title)}" autofocus maxlength="60" />
+        <div class="field"><span>Icon</span>${emojiPicker(REWARD_EMOJI.includes(rr.emoji) ? REWARD_EMOJI : [rr.emoji, ...REWARD_EMOJI], rr.emoji)}</div>
+        <label class="field"><span>Cost in stars</span><input type="number" name="cost" min="1" max="999" value="${rr.cost}"></label>`,
+      onSave(form) {
+        const title = fval(form, 'title');
+        if (!title) { form.elements.title.classList.add('invalid'); return false; }
+        const out = { ...rr, title, emoji: fall(form, 'emoji')[0] || '🎁', cost: clamp(Number(fval(form, 'cost')) || 1, 1, 999) };
+        if (isNew) state.rewards.push(out); else state.rewards = state.rewards.map(x => x.id === out.id ? out : x);
+        save(); renderView();
+      },
+      onDelete: isNew ? null : () => { state.rewards = state.rewards.filter(x => x.id !== rr.id); save(); renderView(); },
+    });
+  }
+
+  function redeemModal(r) {
+    modal({
+      title: `Redeem “${esc(r.title)}”`,
+      body: `<p class="muted">Costs ⭐ ${r.cost}. Who is cashing in?</p>
+        <div class="redeem-list">${state.members.map(m => { const b = balance(m.id); return `<button type="button" class="redeem-btn" data-mid="${m.id}" ${b < r.cost ? 'disabled' : ''} style="--c:${m.color}">${avatar(m)}<span>${esc(m.name)}</span><span class="muted">⭐ ${b}${b < r.cost ? ` · needs ${r.cost - b} more` : ''}</span></button>`; }).join('')}</div>`,
+      onOpen(form) {
+        $$('.redeem-btn', form).forEach(b => b.addEventListener('click', () => {
+          const m = memberById(b.dataset.mid);
+          state.redemptions.push({ id: uid(), rewardId: r.id, title: r.title, memberId: m.id, cost: r.cost, date: todayStr() });
+          save(); closeModal(); renderView();
+          toast(`🎉 ${m.name} redeemed ${r.title}!`);
+          confetti($('#view'));
+        }));
+      },
+    });
+  }
+
+  function listModal(l) {
+    const isNew = !l;
+    const ll = l ? { ...l } : { id: uid(), name: '', emoji: '📝', items: [] };
+    modal({
+      title: isNew ? 'New list' : 'Edit list',
+      body: `<input class="title-input" name="name" placeholder="List name" value="${esc(ll.name)}" autofocus maxlength="40" />
+        <div class="field"><span>Icon</span>${emojiPicker(LIST_EMOJI.includes(ll.emoji) ? LIST_EMOJI : [ll.emoji, ...LIST_EMOJI], ll.emoji)}</div>`,
+      onSave(form) {
+        const name = fval(form, 'name');
+        if (!name) { form.elements.name.classList.add('invalid'); return false; }
+        const out = { ...ll, name, emoji: fall(form, 'emoji')[0] || '📝' };
+        if (isNew) { state.lists.push(out); state.ui.listId = out.id; } else state.lists = state.lists.map(x => x.id === out.id ? out : x);
+        save(); renderView();
+      },
+      onDelete: isNew ? null : () => { state.lists = state.lists.filter(x => x.id !== ll.id); save(); renderView(); toast('List deleted'); },
+    });
+  }
+
+  function mealModal(ds, type) {
+    const label = MEAL_TYPES.find(m => m[0] === type) || MEAL_TYPES[2];
+    const cur = (state.meals[ds] && state.meals[ds][type]) || '';
+    const past = new Set();
+    Object.values(state.meals).forEach(day => Object.entries(day).forEach(([k, v]) => { if (k === type && v) past.add(v); }));
+    const d = parse(ds);
+    modal({
+      title: `${label[2]} ${label[1]} · ${DOW[d.getDay()]} ${MON[d.getMonth()]} ${d.getDate()}`,
+      body: `<input class="title-input" name="meal" list="mealSuggest" value="${esc(cur)}" placeholder="What’s on the menu?" autofocus maxlength="80" />
+        <datalist id="mealSuggest">${[...past].map(v => `<option value="${esc(v)}">`).join('')}</datalist>
+        ${past.size ? `<div class="field"><span>Recent</span><div class="suggest">${[...past].slice(-10).reverse().map(v => `<button type="button" class="pill" data-meal="${esc(v)}">${esc(v)}</button>`).join('')}</div></div>` : ''}
+        <label class="field"><span>Add the ingredients to a list <small class="muted">(optional, comma-separated)</small></span><input name="ingredients" placeholder="tortillas, ground beef, salsa"></label>`,
+      onOpen(form) { $$('[data-meal]', form).forEach(b => b.addEventListener('click', () => { form.elements.meal.value = b.dataset.meal; })); },
+      onSave(form) {
+        const v = fval(form, 'meal');
+        state.meals[ds] = { ...(state.meals[ds] || {}) };
+        if (v) state.meals[ds][type] = v; else delete state.meals[ds][type];
+        const ing = fval(form, 'ingredients').split(',').map(s => s.trim()).filter(Boolean);
+        if (ing.length) {
+          let gl = state.lists.find(l => /grocer/i.test(l.name));
+          if (!gl) { gl = { id: uid(), name: 'Groceries', emoji: '🛒', items: [] }; state.lists.unshift(gl); }
+          ing.forEach(t => gl.items.unshift({ id: uid(), text: t, done: false }));
+          toast(`Added ${ing.length} item${ing.length > 1 ? 's' : ''} to ${gl.name}`);
+        }
+        save(); renderView();
+      },
+      onDelete: cur ? () => { delete state.meals[ds][type]; save(); renderView(); } : null,
+      deleteLabel: 'Clear',
+    });
+  }
+
+  function itemModal(list, item) {
+    modal({
+      title: 'Edit item',
+      body: `<input class="title-input" name="text" value="${esc(item.text)}" autofocus maxlength="120" />`,
+      onSave(form) { const t = fval(form, 'text'); if (!t) return false; item.text = t; save(); renderView(); },
+      onDelete() { list.items = list.items.filter(i => i.id !== item.id); save(); renderView(); },
+    });
+  }
+
+  // ---------------------------------------------------------------- actions
+  function navigate(dir) {
+    const v = state.ui.view;
+    if (v === 'calendar') {
+      const c = ui.cursor;
+      ui.cursor = { day: () => addDays(c, dir), week: () => addDays(c, 7 * dir), schedule: () => addDays(c, 7 * dir), month: () => new Date(c.getFullYear(), c.getMonth() + dir, 1) }[state.ui.calView]();
+    } else if (v === 'chores') ui.choreDate = addDays(ui.choreDate, dir);
+    else if (v === 'meals') ui.mealWeek = addDays(ui.mealWeek, 7 * dir);
+    else return;
+    renderView();
+  }
+  function goToday() { ui.cursor = today(); ui.choreDate = today(); ui.mealWeek = today(); renderView(); }
+
+  const actions = {
+    view(el) { state.ui.view = el.dataset.v; save(); render(); },
+    calview(el) { state.ui.calView = el.dataset.v; save(); renderView(); },
+    nav(el) { navigate(Number(el.dataset.dir)); },
+    today: goToday,
+    'goto-day'(el) { ui.cursor = parse(el.dataset.date); state.ui.calView = 'day'; save(); renderView(); },
+    'toggle-member'(el) {
+      const id = el.dataset.id;
+      state.hidden = state.hidden.includes(id) ? state.hidden.filter(x => x !== id) : [...state.hidden, id];
+      save(); renderMemberFilter(); renderView();
+    },
+    'edit-event'(el) { const ev = state.events.find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
+    'new-event'(el) { eventModal(null, null, { date: el.dataset.date }); },
+    'new-event-at'(el, evt) {
+      const rect = el.getBoundingClientRect();
+      const s = Number(el.parentElement.dataset.start);
+      const min = clamp(s * 60 + Math.floor((evt.clientY - rect.top) / HOUR_H * 2) * 30, 0, 23 * 60);
+      eventModal(null, null, { date: el.dataset.date, startTime: fromMin(min), memberIds: el.dataset.member ? [el.dataset.member] : [] });
+    },
+    'toggle-chore'(el) {
+      const ds = ymd(ui.choreDate);
+      const c = state.chores.find(x => x.id === el.dataset.id); if (!c) return;
+      const day = state.choreDone[ds] = state.choreDone[ds] || {};
+      const nowDone = !day[c.id];
+      if (nowDone) day[c.id] = { m: c.memberId, s: c.stars || 0 }; else delete day[c.id];
+      save(); renderView();
+      if (nowDone) {
+        const row = $(`.chore[data-id="${c.id}"]`);
+        if (row) { row.classList.add('pop'); const s = document.createElement('span'); s.className = 'star-float'; s.textContent = `+${c.stars}⭐`; row.appendChild(s); }
+        const col = $(`.ccol[data-member="${c.memberId}"]`);
+        if (col && col.classList.contains('alldone')) { confetti(col); toast(`🎉 ${memberById(c.memberId).name} finished everything!`); }
+      }
+    },
+    'edit-chore'(el) { const c = state.chores.find(x => x.id === el.dataset.id); if (c) choreModal(c); },
+    'new-chore'(el) { if (!state.members.length) return memberModal(); choreModal(null, { memberId: el.dataset.member }); },
+    'new-member'() { memberModal(); },
+    'edit-member'(el) { memberModal(memberById(el.dataset.id)); },
+    'new-reward'() { rewardModal(); },
+    'edit-reward'(el) { rewardModal(state.rewards.find(r => r.id === el.dataset.id)); },
+    redeem(el) { redeemModal(state.rewards.find(r => r.id === el.dataset.id)); },
+    'new-list'() { listModal(); },
+    'edit-list'(el) { listModal(state.lists.find(l => l.id === el.dataset.id)); },
+    'pick-list'(el) { state.ui.listId = el.dataset.id; save(); renderView(); },
+    'toggle-item'(el) { const l = currentList(); const it = l && l.items.find(i => i.id === el.dataset.id); if (it) { it.done = !it.done; save(); renderView(); } },
+    'delete-item'(el) { const l = currentList(); if (l) { l.items = l.items.filter(i => i.id !== el.dataset.id); save(); renderView(); } },
+    'edit-item'(el) { const l = currentList(); const it = l && l.items.find(i => i.id === el.dataset.id); if (it) itemModal(l, it); },
+    'clear-done'() { const l = currentList(); if (l) { l.items = l.items.filter(i => !i.done); save(); renderView(); } },
+    'edit-meal'(el) { mealModal(el.dataset.date, el.dataset.type); },
+    'copy-meals'() {
+      const ws = startOfWeek(ui.mealWeek); let n = 0;
+      for (let i = 0; i < 7; i++) {
+        const src = state.meals[ymd(addDays(ws, i - 7))]; const dst = ymd(addDays(ws, i));
+        if (src) { state.meals[dst] = { ...src, ...(state.meals[dst] || {}) }; n++; }
+      }
+      save(); renderView(); toast(n ? 'Copied last week’s meals into empty slots' : 'Last week has no meals to copy');
+    },
+    'upload-photos'() { $('#photoInput').click(); },
+    async 'delete-photo'(el) { await photoDB.del(el.dataset.id); const u = photoUrls.get(el.dataset.id); if (u) URL.revokeObjectURL(u); photoUrls.delete(el.dataset.id); renderView(); },
+    sleep() { startScreensaver(); },
+    fullscreen() {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => toast('Full screen is not available here'));
+    },
+    geo() {
+      if (!navigator.geolocation) return toast('Location is not available in this browser');
+      navigator.geolocation.getCurrentPosition(p => {
+        state.settings.weather = { lat: +p.coords.latitude.toFixed(3), lon: +p.coords.longitude.toFixed(3), name: 'My location' };
+        save(); fetchWeather(); renderView(); toast('Weather location set');
+      }, () => toast('Could not get your location'));
+    },
+    'pick-geo'(el) { state.settings.weather = { lat: +el.dataset.lat, lon: +el.dataset.lon, name: el.dataset.name }; save(); fetchWeather(); renderView(); toast(`Weather set to ${el.dataset.name}`); },
+    'clear-weather'() { state.settings.weather = null; ui.weather = null; save(); renderWeather(); renderView(); },
+    export() {
+      const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `calendora-backup-${todayStr()}.json`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    },
+    import() { $('#importInput').click(); },
+    'reset-demo'() { choice('Load the demo family?', 'This replaces everything currently saved (photos are kept).', [{ label: 'Load demo', cls: 'danger', fn: () => { state = seed(defaults()); state.ui.view = 'calendar'; save(); render(); } }]); },
+    'clear-all'() { choice('Start fresh?', 'This deletes all family members, events, chores, lists and meals saved in this browser.', [{ label: 'Delete everything', cls: 'danger', fn: () => { state = defaults(); save(); render(); memberModal(); } }]); },
+  };
+  const currentList = () => state.lists.find(l => l.id === state.ui.listId);
+
+  document.addEventListener('click', evt => {
+    const el = evt.target.closest('[data-action]');
+    if (!el || el.disabled) return;
+    if (el.closest('#modalRoot') && !el.closest('.modal')) return;
+    const fn = actions[el.dataset.action];
+    if (fn) { evt.preventDefault(); evt.stopPropagation(); fn(el, evt); }
+  });
+
+  document.addEventListener('submit', async evt => {
+    const f = evt.target.closest('[data-form]'); if (!f) return;
+    evt.preventDefault();
+    if (f.dataset.form === 'add-item') {
+      const text = f.elements.text.value.trim(); const l = currentList();
+      if (!text || !l) return;
+      text.split(/\n|,(?=\s*\S)/).map(s => s.trim()).filter(Boolean).forEach(t => l.items.unshift({ id: uid(), text: t, done: false }));
+      save(); renderView();
+      const inp = $('.add-item input'); if (inp) inp.focus();
+    }
+    if (f.dataset.form === 'weather-search') {
+      const q = f.elements.q.value.trim(); if (!q) return;
+      const box = $('#geoResults'); box.innerHTML = '<span class="muted">Searching…</span>';
+      try {
+        const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`);
+        const j = await r.json();
+        box.innerHTML = (j.results || []).map(p => {
+          const name = [p.name, p.admin1, p.country_code].filter(Boolean).join(', ');
+          return `<button class="pill" data-action="pick-geo" data-lat="${p.latitude}" data-lon="${p.longitude}" data-name="${esc(name)}">${esc(name)}</button>`;
+        }).join('') || '<span class="muted">No matches — try a nearby city.</span>';
+      } catch (e) { box.innerHTML = '<span class="muted">Search is unavailable right now.</span>'; }
+    }
+  });
+
+  document.addEventListener('change', evt => {
+    const el = evt.target.closest('[data-setting]'); if (!el) return;
+    let v = el.value;
+    if (el.dataset.num) v = Number(v);
+    if (el.dataset.bool) v = v === 'true';
+    state.settings[el.dataset.setting] = v;
+    if (state.settings.dayEnd <= state.settings.dayStart) state.settings.dayEnd = state.settings.dayStart + 1;
+    save();
+    if (el.dataset.setting === 'tempUnit') fetchWeather();
+    render();
+  });
+
+  $('#photoInput').addEventListener('change', async e => {
+    const files = [...e.target.files]; e.target.value = '';
+    if (!files.length) return;
+    toast(`Adding ${files.length} photo${files.length > 1 ? 's' : ''}…`);
+    let ok = 0;
+    for (const f of files) {
+      try { const blob = await resizeImage(f); await photoDB.put({ id: uid(), blob, added: Date.now() }); ok++; }
+      catch (err) { console.warn(err); }
+    }
+    toast(ok ? `Added ${ok} photo${ok > 1 ? 's' : ''}` : 'Those files could not be added');
+    if (state.ui.view === 'photos') renderView();
+  });
+
+  $('#importInput').addEventListener('change', async e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      if (!data || !Array.isArray(data.members) || !Array.isArray(data.events)) throw new Error('bad file');
+      const d = defaults();
+      state = { ...d, ...data, settings: { ...d.settings, ...(data.settings || {}) }, ui: { ...d.ui, ...(data.ui || {}) } };
+      save(); render(); fetchWeather(); toast('Backup imported');
+    } catch (err) { toast('That file is not a Calendora backup'); }
+  });
+
+  $('#fab').addEventListener('click', () => {
+    switch (state.ui.view) {
+      case 'calendar': return eventModal(null, null, { date: ymd(state.ui.calView === 'month' && ui.cursor.getMonth() === today().getMonth() ? today() : ui.cursor) });
+      case 'chores': return actions['new-chore']({ dataset: {} });
+      case 'rewards': return rewardModal();
+      case 'lists': return listModal();
+      case 'meals': return mealModal(todayStr(), 'dinner');
+      case 'photos': return $('#photoInput').click();
+      default: return null;
+    }
+  });
+
+  // swipe left / right to move between days, weeks and months
+  let touch = null;
+  $('#view').addEventListener('touchstart', e => { if (e.touches.length === 1) touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() }; }, { passive: true });
+  $('#view').addEventListener('touchend', e => {
+    if (!touch) return;
+    const dx = e.changedTouches[0].clientX - touch.x, dy = e.changedTouches[0].clientY - touch.y;
+    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.6 && Date.now() - touch.t < 700) navigate(dx < 0 ? 1 : -1);
+    touch = null;
+  }, { passive: true });
+
+  document.addEventListener('keydown', e => {
+    if (ssOn) { stopScreensaver(); return; }
+    if (e.key === 'Escape' && modalOpen) { closeModal(); return; }
+    if (modalOpen || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+    if (e.key === 'ArrowLeft') navigate(-1);
+    else if (e.key === 'ArrowRight') navigate(1);
+    else if (e.key === 't') goToday();
+    else if (state.ui.view === 'calendar' && 'dwms'.includes(e.key)) { state.ui.calView = { d: 'day', w: 'week', m: 'month', s: 'schedule' }[e.key]; save(); renderView(); }
+    else if (e.key === 'n') $('#fab').click();
+  });
+
+  // ---------------------------------------------------------------- toast
+  let toastTimer;
+  function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg; t.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  }
+
+  // ---------------------------------------------------------------- photo frame / screensaver
+  let ssOn = false, ssTimer = null, ssIdx = 0, ssSlides = [], ssFlip = false, lastActive = Date.now();
+  ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart'].forEach(ev => addEventListener(ev, () => { lastActive = Date.now(); }, { passive: true }));
+  const ss = $('#screensaver');
+
+  async function startScreensaver() {
+    if (ssOn) return;
+    ssOn = true;
+    closeModal();
+    const photos = await getPhotos();
+    ssSlides = photos.length ? photos.map(p => `url('${p.url}') center/cover no-repeat`) : SCENES;
+    ssIdx = Math.floor(Math.random() * ssSlides.length);
+    ss.innerHTML = `<div class="ss-slide" id="ssA"></div><div class="ss-slide" id="ssB"></div><div class="ss-shade"></div>
+      <div class="ss-info"><div class="ss-time" id="ssTime"></div><div class="ss-date" id="ssDate"></div><div class="ss-weather" id="ssWeather"></div></div>
+      <div class="ss-events" id="ssEvents"></div><div class="ss-hint">Tap anywhere to return</div>`;
+    ss.hidden = false;
+    requestAnimationFrame(() => ss.classList.add('on'));
+    showSlide();
+    updateScreensaver();
+    ssTimer = setInterval(() => { ssIdx = (ssIdx + 1) % ssSlides.length; showSlide(); }, 12000);
+  }
+  function showSlide() {
+    ssFlip = !ssFlip;
+    const show = $(ssFlip ? '#ssA' : '#ssB'), hide = $(ssFlip ? '#ssB' : '#ssA');
+    if (!show) return;
+    show.style.background = ssSlides[ssIdx];
+    show.classList.remove('kb'); void show.offsetWidth; show.classList.add('kb', 'show');
+    hide.classList.remove('show');
+  }
+  function updateScreensaver() {
+    if (!ssOn) return;
+    const n = new Date();
+    $('#ssTime').innerHTML = state.settings.use24h ? `${pad(n.getHours())}:${pad(n.getMinutes())}` : `${n.getHours() % 12 || 12}:${pad(n.getMinutes())}<small>${n.getHours() < 12 ? 'AM' : 'PM'}</small>`;
+    $('#ssDate').textContent = `${DOW_LONG[n.getDay()]}, ${MONTHS[n.getMonth()]} ${n.getDate()}`;
+    const w = ui.weather;
+    $('#ssWeather').textContent = w && w.current ? `${wIcon(w.current.weather_code, w.current.is_day)} ${Math.round(w.current.temperature_2m)}°` : '';
+    const nowMin = n.getHours() * 60 + n.getMinutes();
+    dayCache = new Map();
+    const up = eventsOn(todayStr()).filter(e => e.allDay || toMin(e.endTime || e.startTime) >= nowMin).slice(0, 4);
+    $('#ssEvents').innerHTML = up.length ? `<div class="ss-ev-head">Today</div>${up.map(e => `<div class="ss-ev" style="--c:${evColor(e)}"><b>${e.allDay ? 'All day' : fmtTime(e.startTime)}</b>${esc(e.title)}</div>`).join('')}` : '';
+  }
+  function stopScreensaver() {
+    if (!ssOn) return;
+    ssOn = false; clearInterval(ssTimer);
+    ss.classList.remove('on');
+    setTimeout(() => { if (!ssOn) { ss.hidden = true; ss.innerHTML = ''; } }, 400);
+    lastActive = Date.now();
+    goToday();
+  }
+  ss.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); stopScreensaver(); });
+
+  // ---------------------------------------------------------------- tick
+  let lastDay = todayStr();
+  setInterval(() => {
+    renderClock();
+    positionNowLine();
+    if (ssOn) updateScreensaver();
+    const m = state.settings.screensaverMin;
+    if (!ssOn && !modalOpen && m > 0 && Date.now() - lastActive > m * 60000) startScreensaver();
+    if (todayStr() !== lastDay) { lastDay = todayStr(); goToday(); }
+  }, 1000 * 15);
+  setInterval(fetchWeather, 30 * 60 * 1000);
+
+  // ---------------------------------------------------------------- boot
+  render();
+  fetchWeather();
+  setInterval(renderClock, 1000);
+})();
