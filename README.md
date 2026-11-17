@@ -20,6 +20,7 @@ A touch-friendly family wall calendar that runs in any web browser. Put it full-
 - **Photo frame**: when the calendar sits idle, it plays a slideshow of your photos with the time, the weather and today's events.
 - **Google Calendar two-way sync**: show your Google calendars, give each one to a family member, and save new events straight to Google.
 - **Apple (iCloud) calendars, read-only**: paste a calendar's Public Calendar link and choose whose it is. The Worker fetches the feed and the app expands repeating events, time zones, skipped dates and moved instances. It refreshes about every 15 minutes.
+- **AnyList shopping-list sync (unofficial)**: keeps one Calendora list and one AnyList list matched in both directions, covering adding, renaming, checking off and deleting items. It runs every minute and right after the list is edited in Calendora. To set it up, add `ANYLIST_EMAIL` and `ANYLIST_PASSWORD` as Worker secrets, then switch it on in Settings.
 - **Weather**: free forecast from Open-Meteo, shown in the header and on each day in the week view.
 - Full-screen mode, a 12- or 24-hour clock, a choice of first day of the week, and backup export and import.
 
@@ -53,3 +54,7 @@ Keyboard shortcuts: `←` and `→` move through dates, `t` jumps to today, `d`,
 | `app.js` | State, rendering, the recurrence engine, modals, the photo frame, weather, Google sync and family sync |
 | `src/worker.js` | Cloudflare Worker: static files plus `/api` (passcode, sessions, shared board in D1) |
 | `wrangler.toml` | Worker settings and the D1 binding |
+
+## Credits
+
+AnyList has no public API. Calendora's AnyList sync talks to the same private protocol AnyList's own apps use. The protocol details (endpoints and message formats) come from the MIT-licensed [`anylist`](https://github.com/codetheweb/anylist) library by codetheweb. Calendora is not affiliated with or endorsed by AnyList, and the sync may stop working if AnyList changes its service.
