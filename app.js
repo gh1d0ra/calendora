@@ -2433,8 +2433,8 @@
   const DINNER_DEFAULTS = ['Dutch Oven Potatoes', 'Meatballs and Spaghetti', 'Moldovan Pie', 'Grilled Chicken Salad', 'Orange Chicken', 'Roasted Chicken and Potatoes',
     'Honey Lime Chicken and Avocado Salad', 'Mashed Potatoes and Fried Fish', 'Mămăligă cu tocăniță', 'Baked Salmon and Asparagus', 'Stuffed Peppers', 'Chicken Quesadillas', 'Ciorbă de perișoare',
     'Morcovi cu coriandru și cotlete', 'Creamy Chicken and Mushroom', 'Chicken Fried Rice', 'Chicken Noodle Soup', 'Beef Stew', 'Chicken Livers and Potatoes',
-    'Tomato Soup and Grilled Cheese Sandwiches', 'Chicken Salad Sandwich', 'Lasagna', 'Chickpea and Spicy Cucumber Salad', 'Pulled Pork and Coleslaw'];
-  const DINNER_SEED = 3;
+    'Tomato Soup and Grilled Cheese Sandwiches', 'Chicken Salad Sandwich', 'Lasagna', 'Chickpea and Spicy Cucumber Salad', 'Pulled Pork and Coleslaw', 'Baked Brussels Sprouts', 'Meatball Subs'];
+  const DINNER_SEED = 4;
   function seedDinners() {
     const st = state.settings;
     if ((st.dinnerSeed || 0) >= DINNER_SEED) return;
