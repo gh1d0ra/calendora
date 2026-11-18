@@ -96,7 +96,7 @@
       members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [], babies: [], babyLog: [], workouts: [], supplements: [], suppTaken: {}, illnesses: [], healthLog: [],
       hidden: [], gEvents: [], gSyncedAt: null,
       settings: {
-        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true,
+        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, dinnerPresets: ['Dutch Oven Potatoes', 'Meatballs and Spaghetti'],
         google: { clientId: '', connected: false, accounts: [], calendars: {}, defaultCal: '' },
       },
       ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan' },
@@ -2015,6 +2015,7 @@
           <select data-setting="dayStart" data-num="1">${[5, 6, 7, 8, 9].map(h => opt(h, fmtHourLabel(h), s.dayStart)).join('')}</select>
           <span class="muted">to</span>
           <select data-setting="dayEnd" data-num="1">${[18, 19, 20, 21, 22, 23, 24].map(h => opt(h, fmtHourLabel(h), s.dayEnd)).join('')}</select></label>
+        <label class="field"><span>Our dinners <small class="muted">(one per line — shown as a dropdown when picking dinner)</small></span><textarea rows="4" data-setting-lines="dinnerPresets">${esc((s.dinnerPresets || []).join('\n'))}</textarea></label>
         <label class="field inline"><span>Show dinner on the week view</span><select data-setting="showMeals" data-bool="1">${opt('true', 'Yes', s.showMeals)}${opt('false', 'No', s.showMeals)}</select></label>
         <label class="field inline"><span>Photo frame starts after</span><select data-setting="screensaverMin" data-num="1">${[[0, 'Never'], [1, '1 minute'], [5, '5 minutes'], [10, '10 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour']].map(([v, l]) => opt(v, l, s.screensaverMin)).join('')}</select></label>
       </section>
@@ -2438,7 +2439,8 @@
     const d = parse(ds);
     modal({
       title: `${label[2]} ${label[1]} · ${DOW[d.getDay()]} ${MON[d.getMonth()]} ${d.getDate()}`,
-      body: `<input class="title-input" name="meal" list="mealSuggest" value="${esc(cur)}" placeholder="What’s on the menu?" autofocus maxlength="80" />
+      body: `${type === 'dinner' ? `<label class="field"><span>Our dinners</span><select name="preset"><option value="">Pick a dinner…</option>${(state.settings.dinnerPresets || []).map(n => `<option value="${esc(n)}" ${n === cur ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>` : ''}
+        <input class="title-input" name="meal" list="mealSuggest" value="${esc(cur)}" placeholder="What’s on the menu?" autofocus maxlength="80" />
         <datalist id="mealSuggest">${[...past.keys()].map(v => `<option value="${esc(v)}">`).join('')}</datalist>
         ${past.size ? `<div class="field"><span>Recent</span><div class="suggest">${[...past.keys()].slice(-10).reverse().map(v => `<button type="button" class="pill" data-meal="${esc(v)}">${esc(v)}${past.get(v) ? ' 📖' : ''}</button>`).join('')}</div></div>` : ''}
         <div class="field"><span>Recipe</span>
@@ -2448,6 +2450,7 @@
           </div>
           <small class="muted">Paste a link, snap a photo or type it in — it opens in a cooking view from the calendar.</small>
         </div>
+        ${type === 'dinner' ? '<button type="button" class="linkish" data-save-preset>☆ Add this to Our dinners</button>' : ''}
         <label class="check-row recipe-groceries" hidden><input type="checkbox" name="addIng"> Add this recipe’s ingredients to Groceries</label>
         <label class="field"><span>Add other items to Groceries <small class="muted">(optional, comma-separated)</small></span><input name="ingredients" placeholder="tortillas, ground beef, salsa"></label>`,
       onOpen(form) {
@@ -2455,6 +2458,15 @@
         const syncIng = () => { const r = recipeById(sel.value); $('.recipe-groceries', form).hidden = !(r && (r.ingredients || []).length); };
         sel.addEventListener('change', () => { syncIng(); const r = recipeById(sel.value); if (r && !form.elements.meal.value.trim()) form.elements.meal.value = r.title; });
         syncIng();
+        const pre = form.elements.preset, sp = $('[data-save-preset]', form);
+        const syncSp = () => { if (!sp) return; const n = form.elements.meal.value.trim(); sp.hidden = !n || (state.settings.dinnerPresets || []).some(x => x.toLowerCase() === n.toLowerCase()); };
+        if (pre) pre.addEventListener('change', () => {
+          if (!pre.value) return; form.elements.meal.value = pre.value;
+          const r = recipes.find(x => x.title.toLowerCase() === pre.value.toLowerCase()) || recipeById(past.get(pre.value));
+          if (r) { sel.value = r.id; syncIng(); } syncSp();
+        });
+        form.elements.meal.addEventListener('input', syncSp); syncSp();
+        if (sp) sp.addEventListener('click', () => { const n = form.elements.meal.value.trim(); if (!n) return; state.settings.dinnerPresets = [...(state.settings.dinnerPresets || []), n]; save(); sp.hidden = true; if (pre) pre.insertAdjacentHTML('beforeend', `<option value="${esc(n)}" selected>${esc(n)}</option>`); toast(`${n} added to Our dinners`); });
         $$('[data-meal]', form).forEach(b => b.addEventListener('click', () => {
           form.elements.meal.value = b.dataset.meal;
           const rid = past.get(b.dataset.meal);
@@ -2775,6 +2787,7 @@
       const f = icalFeed(t.dataset.icalMember); if (!f) return;
       f.memberId = t.value; icalRemap(); save(); toast(`${f.name} → ${t.value ? memberById(t.value).name : 'Everyone'}`); return;
     }
+    if (t.matches('[data-setting-lines]')) { state.settings[t.dataset.settingLines] = [...new Set(t.value.split('\n').map(x => x.trim()).filter(Boolean))]; save(); toast('Saved'); return; }
     if (t.matches('[data-setting-bool]')) { state.settings[t.dataset.settingBool] = t.checked; save(); render(); if (t.dataset.settingBool === 'babyEnabled' && t.checked) toast('Baby is now in the menu'); return; }
     const el = t.closest('[data-setting]'); if (!el) return;
     let v = el.value;
