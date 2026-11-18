@@ -53,6 +53,8 @@ async function ensureSchema(db) {
     db.prepare('CREATE TABLE IF NOT EXISTS board (id TEXT PRIMARY KEY, data TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL)'),
     db.prepare('CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT PRIMARY KEY, count INTEGER NOT NULL, window_start INTEGER NOT NULL)'),
     db.prepare('CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL)'),
+    // Last good copy of each outside calendar, so every device can show it when Google or Apple can't be reached.
+    db.prepare('CREATE TABLE IF NOT EXISTS snapshots (key TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL)'),
   ]);
   schemaReady = true;
 }
@@ -450,6 +452,12 @@ async function anylistSyncOnce(db, env, board, version, cfg) {
 }
 
 // ------------------------------------------------------------------ API
+const SNAP_MAX = 1900000; // D1 keeps up to ~2 MB in one value
+async function putSnapshot(db, key, data) {
+  if (data.length > SNAP_MAX) return false;
+  await db.prepare('INSERT INTO snapshots (key, data, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at').bind(key, data, Date.now()).run();
+  return true;
+}
 async function readJson(request) {
   if (!(request.headers.get('Content-Type') || '').includes('application/json')) return null;
   try { return await request.json(); } catch (e) { return null; }
@@ -642,6 +650,28 @@ async function handleApi(request, env, url, ctx) {
     });
   }
 
+  // Google Calendar copies, one per Google account, written by whichever device last synced it.
+  if (path === '/api/snapshots' && method === 'GET') {
+    const since = Number(url.searchParams.get('since')) || 0;
+    const rows = await db.prepare("SELECT key, data, updated_at FROM snapshots WHERE key LIKE 'google:%'").all();
+    const out = {};
+    for (const r of rows.results || []) out[r.key.slice(7)] = r.updated_at > since ? { at: r.updated_at, data: JSON.parse(r.data) } : { at: r.updated_at, unchanged: true };
+    return json({ google: out });
+  }
+  if (path.startsWith('/api/snapshots/google/')) {
+    const acct = decodeURIComponent(path.slice('/api/snapshots/google/'.length));
+    if (!/^[^\s/@]+@[^\s/@]+$/.test(acct)) return json({ error: 'Bad account' }, 400);
+    if (method === 'DELETE') { await db.prepare('DELETE FROM snapshots WHERE key = ?').bind(`google:${acct}`).run(); return json({ ok: true }); }
+    if (method === 'PUT') {
+      const body = await readJson(request);
+      if (!body || !Array.isArray(body.events) || typeof body.calendars !== 'object') return json({ error: 'Bad snapshot' }, 400);
+      let data = JSON.stringify({ events: body.events, calendars: body.calendars, syncedAt: Number(body.syncedAt) || Date.now() });
+      if (data.length > SNAP_MAX) data = JSON.stringify({ events: body.events.map(e => ({ ...e, notes: '' })), calendars: body.calendars, syncedAt: Number(body.syncedAt) || Date.now() });
+      if (!(await putSnapshot(db, `google:${acct}`, data))) return json({ error: 'Too many events to save a copy' }, 413);
+      return json({ ok: true, at: Date.now() });
+    }
+  }
+
   if (path === '/api/ical' && method === 'GET') {
     // Fetch a calendar feed (e.g. an iCloud "Public Calendar" link) on the family's behalf.
     // The link is looked up in the shared board, so only feeds the family added can be fetched.
@@ -656,6 +686,12 @@ async function handleApi(request, env, url, ctx) {
     try { host = new URL(target).hostname; } catch (e) { return json({ error: 'That calendar link is not valid' }, 400); }
     if (!/^https?:\/\//i.test(target)) return json({ error: 'The link must start with webcal:// or https://' }, 400);
     if (host !== 'localhost') target = target.replace(/^http:\/\//i, 'https://');
+    const saved = () => db.prepare('SELECT data, updated_at FROM snapshots WHERE key = ?').bind(`ical:${id}`).first();
+    const fallback = async (msg, status) => {
+      const row = await saved().catch(() => null);
+      if (row) return new Response(row.data, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store', 'X-Snapshot-At': String(row.updated_at), 'X-Snapshot-Reason': encodeURIComponent(msg) } });
+      return json({ error: msg }, status);
+    };
     let r;
     try {
       r = await fetch(target, {
@@ -663,12 +699,14 @@ async function handleApi(request, env, url, ctx) {
         redirect: 'follow',
         ...(url.searchParams.get('fresh') ? {} : { cf: { cacheTtl: 600, cacheEverything: true } }),
       });
-    } catch (e) { return json({ error: 'Could not reach that calendar' }, 502); }
-    if (r.status === 404 || r.status === 403) return json({ error: 'Calendar link not found — is Public Calendar still turned on?' }, 502);
-    if (!r.ok) return json({ error: `The calendar server answered ${r.status}` }, 502);
+    } catch (e) { return fallback('Could not reach that calendar', 502); }
+    if (r.status === 404 || r.status === 403) return fallback('Calendar link not found — is Public Calendar still turned on?', 502);
+    if (!r.ok) return fallback(`The calendar server answered ${r.status}`, 502);
     const text = await r.text();
     if (text.length > 10000000) return json({ error: 'That calendar is too large' }, 502);
-    if (!text.includes('BEGIN:VCALENDAR')) return json({ error: 'That link is not a calendar feed' }, 502);
+    if (!text.includes('BEGIN:VCALENDAR')) return fallback('That link is not a calendar feed', 502);
+    if (ctx) ctx.waitUntil(putSnapshot(db, `ical:${id}`, text).catch(() => {}));
+    else await putSnapshot(db, `ical:${id}`, text).catch(() => {});
     return new Response(text, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store' } });
   }
 

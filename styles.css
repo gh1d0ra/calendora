@@ -691,3 +691,6 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
 /* let the newer pages scroll inside the fixed-height view, and keep sideways scrolling smooth on touch screens */
 .health, .baby, .cmonth { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .cweek, .chores, .week, .week-time { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+.g-copies { background: #F6F8FE; border-radius: 14px; padding: 10px 14px; margin: 10px 0; }
+.g-copies p { margin: 0 0 6px; }
+.g-copy { display: flex; align-items: center; gap: 8px; font-weight: 700; padding: 3px 0; }
