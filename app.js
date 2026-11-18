@@ -2433,8 +2433,32 @@
   const DINNER_DEFAULTS = ['Dutch Oven Potatoes', 'Meatballs and Spaghetti', 'Moldovan Pie', 'Grilled Chicken Salad', 'Orange Chicken', 'Roasted Chicken and Potatoes',
     'Honey Lime Chicken and Avocado Salad', 'Mashed Potatoes and Fried Fish', 'Mămăligă cu tocăniță', 'Baked Salmon and Asparagus', 'Stuffed Peppers', 'Chicken Quesadillas', 'Ciorbă de perișoare',
     'Morcovi cu coriandru și cotlete', 'Creamy Chicken and Mushroom', 'Chicken Fried Rice', 'Chicken Noodle Soup', 'Beef Stew', 'Chicken Livers and Potatoes',
-    'Tomato Soup and Grilled Cheese Sandwiches', 'Chicken Salad Sandwich', 'Lasagna', 'Chickpea and Spicy Cucumber Salad', 'Pulled Pork and Coleslaw', 'Baked Brussels Sprouts', 'Meatball Subs'];
-  const DINNER_SEED = 4;
+    'Tomato Soup and Grilled Cheese Sandwiches', 'Chicken Salad Sandwich', 'Lasagna', 'Chickpea and Spicy Cucumber Salad', 'Pulled Pork and Coleslaw', 'Baked Brussels Sprouts', 'Meatball Subs',
+    'Chicken Kebab with Tzatziki Sauce and Rice', 'Chicken Spinach Meatballs', 'Taquitos', 'Broccoli Chicken Alfredo', 'Mexican Beef and Rice Skillet',
+    'Sweet Potato Salad', 'Mushroom and Green Bean Salad', 'Grilled Chicken Thighs'];
+  const DINNER_SEED = 5;
+  // For each dinner name: times made in the last 365 days, last date made (today or earlier) and next planned date.
+  function dinnerHistory(skipDs) {
+    const t = todayStr(), yearAgo = ymd(addDays(today(), -365)), h = {};
+    for (const [ds, day] of Object.entries(state.meals)) {
+      const n = day && mealName(day.dinner); if (!n || ds === skipDs) continue;
+      const k = n.trim().toLowerCase(), r = h[k] = h[k] || { count: 0, last: '', next: '' };
+      if (ds <= t) { if (ds >= yearAgo) r.count++; if (ds > r.last) r.last = ds; }
+      else if (!r.next || ds < r.next) r.next = ds;
+    }
+    return h;
+  }
+  const shortDate = ds => { const x = parse(ds); return `${MON[x.getMonth()]} ${x.getDate()}${x.getFullYear() !== today().getFullYear() ? `, ${x.getFullYear()}` : ''}`; };
+  function dinnerOptions(cur, ds) {
+    const h = dinnerHistory(ds), list = state.settings.dinnerPresets || [];
+    const info = n => h[n.toLowerCase()] || { count: 0, last: '', next: '' };
+    // Never made first (in list order), then the longest since last made, so recent dinners sink to the bottom.
+    const key = n => { const r = info(n); return r.next || r.last || ''; };
+    const sorted = list.map((n, i) => ({ n, i })).sort((a, b) => key(a.n).localeCompare(key(b.n)) || a.i - b.i);
+    return sorted.map(({ n }) => { const r = info(n);
+      const note = [r.count ? `${r.count}× in last year` : '', r.last ? `last ${shortDate(r.last)}` : '', r.next ? `planned ${shortDate(r.next)}` : ''].filter(Boolean).join(' · ');
+      return `<option value="${esc(n)}" ${n === cur ? 'selected' : ''}>${esc(n)}${note ? ` — ${note}` : ''}</option>`; }).join('');
+  }
   function seedDinners() {
     const st = state.settings;
     if ((st.dinnerSeed || 0) >= DINNER_SEED) return;
@@ -2453,7 +2477,7 @@
     const d = parse(ds);
     modal({
       title: `${label[2]} ${label[1]} · ${DOW[d.getDay()]} ${MON[d.getMonth()]} ${d.getDate()}`,
-      body: `${type === 'dinner' ? `<label class="field"><span>Our dinners</span><select name="preset"><option value="">Pick a dinner…</option>${(state.settings.dinnerPresets || []).map(n => `<option value="${esc(n)}" ${n === cur ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>` : ''}
+      body: `${type === 'dinner' ? `<label class="field"><span>Our dinners</span><select name="preset"><option value="">Pick a dinner…</option>${dinnerOptions(cur, ds)}</select><small class="muted">Recently made dinners move to the bottom.</small></label>` : ''}
         <input class="title-input" name="meal" list="mealSuggest" value="${esc(cur)}" placeholder="What’s on the menu?" autofocus maxlength="80" />
         <datalist id="mealSuggest">${[...past.keys()].map(v => `<option value="${esc(v)}">`).join('')}</datalist>
         ${past.size ? `<div class="field"><span>Recent</span><div class="suggest">${[...past.keys()].slice(-10).reverse().map(v => `<button type="button" class="pill" data-meal="${esc(v)}">${esc(v)}${past.get(v) ? ' 📖' : ''}</button>`).join('')}</div></div>` : ''}
