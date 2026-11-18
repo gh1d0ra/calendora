@@ -1484,15 +1484,25 @@
   }
   function renderChores() {
     const d = ui.choreDate, ds = ymd(d);
+    const cv = state.ui.choreView || 'day';
+    const ws = startOfWeek(d), we = addDays(ws, 6);
+    const title = cv === 'day' ? `${dateLabel(d)}${daysBetween(today(), d) && Math.abs(daysBetween(today(), d)) <= 1 ? ` <span class="muted">${MON[d.getMonth()]} ${d.getDate()}</span>` : ''}`
+      : cv === 'week' ? `${MON[ws.getMonth()]} ${ws.getDate()} – ${ws.getMonth() !== we.getMonth() ? `${MON[we.getMonth()]} ` : ''}${we.getDate()}`
+      : `${MONTHS[d.getMonth()]} <span class="muted">${d.getFullYear()}</span>`;
+    const unit = { day: 'day', week: 'week', month: 'month' }[cv];
     $('#toolbar').innerHTML = `
       <div class="nav-group">
-        <button class="icon-btn" data-action="nav" data-dir="-1" aria-label="Previous day">${icon('left')}</button>
+        <button class="icon-btn" data-action="nav" data-dir="-1" aria-label="Previous ${unit}">${icon('left')}</button>
         <button class="btn" data-action="today">Today</button>
-        <button class="icon-btn" data-action="nav" data-dir="1" aria-label="Next day">${icon('right')}</button>
+        <button class="icon-btn" data-action="nav" data-dir="1" aria-label="Next ${unit}">${icon('right')}</button>
       </div>
-      <h1>${dateLabel(d)}${daysBetween(today(), d) && Math.abs(daysBetween(today(), d)) <= 1 ? ` <span class="muted">${MON[d.getMonth()]} ${d.getDate()}</span>` : ''}</h1>
+      <h1>${title}</h1>
+      <div class="seg">${[['day', 'Day'], ['week', 'Week'], ['month', 'Month']].map(([k, l]) => `<button class="${cv === k ? 'on' : ''}" data-action="chore-view" data-v="${k}">${l}</button>`).join('')}</div>
       <span class="spacer"></span>
       <button class="btn primary" data-action="new-chore">${icon('plus')} Add chore</button>`;
+    if (!state.members.length) { $('#view').innerHTML = emptyMembers(); return; }
+    if (cv === 'week') return renderChoresWeek(ws);
+    if (cv === 'month') return renderChoresMonth(d);
     const done = state.choreDone[ds] || {};
     if (!state.members.length) { $('#view').innerHTML = emptyMembers(); return; }
     $('#view').innerHTML = `<div class="chores">${state.members.map(m => {
@@ -1520,6 +1530,39 @@
         </div>
       </div>`;
     }).join('')}</div>`;
+  }
+  const choresFor = (mid, ds) => state.chores.filter(c => c.memberId === mid && choreOn(c, ds));
+  function renderChoresWeek(ws) {
+    const days = [...Array(7)].map((_, i) => addDays(ws, i)), tds = todayStr();
+    $('#view').innerHTML = `<div class="cweek" style="grid-template-columns: 170px repeat(7, minmax(120px, 1fr))">
+      <div class="cw-corner"></div>
+      ${days.map(x => `<button class="cw-day ${ymd(x) === tds ? 'today' : ''}" data-action="chore-goto" data-date="${ymd(x)}"><span>${DOW[x.getDay()]}</span><b>${x.getDate()}</b></button>`).join('')}
+      ${state.members.map(m => {
+        let tot = 0, dn = 0, stars = 0;
+        const cells = days.map(x => {
+          const ds = ymd(x), done = state.choreDone[ds] || {}, list = choresFor(m.id, ds);
+          tot += list.length; dn += list.filter(c => done[c.id]).length; stars += list.filter(c => done[c.id]).reduce((a, c) => a + (done[c.id].s || 0), 0);
+          const all = list.length && list.every(c => done[c.id]);
+          return `<div class="cw-cell ${ds === tds ? 'today' : ''} ${all ? 'alldone' : ''}" style="--c:${m.color}">
+            ${list.map(c => `<button class="cw-chore ${done[c.id] ? 'done' : ''}" data-action="toggle-chore" data-id="${c.id}" data-date="${ds}" title="${esc(c.title)}"><span>${esc(c.emoji || '⭐')}</span><span class="cw-t">${esc(c.title)}</span></button>`).join('') || '<span class="cw-none">—</span>'}
+          </div>`;
+        }).join('');
+        return `<div class="cw-who" style="--c:${m.color}">${avatar(m)}<div><b>${esc(m.name)}</b><small class="muted">${dn}/${tot} done · ⭐ ${stars}</small></div></div>${cells}`;
+      }).join('')}
+    </div>`;
+  }
+  function renderChoresMonth(d) {
+    const first = new Date(d.getFullYear(), d.getMonth(), 1), start = startOfWeek(first);
+    const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    const weeks = Math.ceil((daysBetween(start, last) + 1) / 7), tds = todayStr();
+    const head = [...Array(7)].map((_, i) => `<div class="cm-dow">${DOW[addDays(start, i).getDay()]}</div>`).join('');
+    const cells = [...Array(weeks * 7)].map((_, i) => {
+      const x = addDays(start, i), ds = ymd(x), done = state.choreDone[ds] || {};
+      const rows = state.members.map(m => { const list = choresFor(m.id, ds); if (!list.length) return ''; const n = list.filter(c => done[c.id]).length;
+        return `<div class="cm-row" style="--c:${m.color}"><span class="cm-dot"></span><span class="cm-name">${esc(m.name)}</span><span class="cm-bar"><i style="width:${Math.round(n / list.length * 100)}%"></i></span><span class="cm-n ${n === list.length ? 'all' : ''}">${n === list.length ? '✓' : `${n}/${list.length}`}</span></div>`; }).join('');
+      return `<button class="cm-cell ${x.getMonth() !== d.getMonth() ? 'other' : ''} ${ds === tds ? 'today' : ''} ${ds > tds ? 'future' : ''}" data-action="chore-goto" data-date="${ds}"><span class="cm-date">${x.getDate()}</span>${rows}</button>`;
+    }).join('');
+    $('#view').innerHTML = `<div class="cmonth">${head}${cells}</div>`;
   }
   function emptyMembers() {
     return `<div class="empty card"><p>Add your family members first.</p><button class="btn primary" data-action="new-member">${icon('plus')} Add a family member</button></div>`;
@@ -2465,7 +2508,10 @@
     if (v === 'calendar') {
       const c = ui.cursor;
       ui.cursor = { day: () => addDays(c, dir), week: () => addDays(c, 7 * dir), schedule: () => addDays(c, 7 * dir), month: () => new Date(c.getFullYear(), c.getMonth() + dir, 1) }[state.ui.calView]();
-    } else if (v === 'chores') ui.choreDate = addDays(ui.choreDate, dir);
+    } else if (v === 'chores') {
+      const cv = state.ui.choreView || 'day';
+      ui.choreDate = cv === 'month' ? new Date(ui.choreDate.getFullYear(), ui.choreDate.getMonth() + dir, 1) : addDays(ui.choreDate, cv === 'week' ? 7 * dir : dir);
+    }
     else if (v === 'baby') bUI.day = addDays(bUI.day, dir);
     else if (v === 'health') hUI.day = addDays(hUI.day, dir);
     else if (v === 'meals') ui.mealWeek = addDays(ui.mealWeek, 7 * dir);
@@ -2572,8 +2618,10 @@
       const min = clamp(s * 60 + Math.floor((evt.clientY - rect.top) / HOUR_H * 2) * 30, 0, 23 * 60);
       eventModal(null, null, { date: el.dataset.date, startTime: fromMin(min), memberIds: el.dataset.member ? [el.dataset.member] : [] });
     },
+    'chore-view'(el) { state.ui.choreView = el.dataset.v; save({ localOnly: true }); renderView(); },
+    'chore-goto'(el) { ui.choreDate = parse(el.dataset.date); state.ui.choreView = 'day'; save({ localOnly: true }); renderView(); },
     'toggle-chore'(el) {
-      const ds = ymd(ui.choreDate);
+      const ds = el.dataset.date || ymd(ui.choreDate);
       const c = state.chores.find(x => x.id === el.dataset.id); if (!c) return;
       const day = state.choreDone[ds] = state.choreDone[ds] || {};
       const nowDone = !day[c.id];
