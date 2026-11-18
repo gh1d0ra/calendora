@@ -1133,6 +1133,7 @@
     let body;
     if (isInstalled()) body = '<p>✅ You’re using the installed app.</p>';
     else if (installPrompt) body = `<p class="muted small">Adds Calendora to your home screen; it opens full screen like any other app.</p><button class="btn primary" data-action="install-app">${icon('plus')} Install app</button>`;
+    else if (/Silk\//.test(navigator.userAgent)) body = '<p>On a Fire tablet (Silk): tap the <b>⋮</b> menu at the top right, then <b>Add to Home screen</b>. If you don’t see it, add a bookmark and choose <b>Pin to Home</b>.</p>';
     else if (ios) body = '<p>On iPad or iPhone: open this page in <b>Safari</b>, tap the <b>Share</b> button, then <b>Add to Home Screen</b>.</p>';
     else body = '<p>On Android: open this page in <b>Chrome</b>, tap the <b>⋮</b> menu, then <b>Install app</b> (or <b>Add to Home screen</b>).</p>';
     return `<section class="card"><h3>Install as an app</h3>${body}</section>`;
