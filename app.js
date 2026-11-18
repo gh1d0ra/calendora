@@ -96,7 +96,7 @@
       members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [], babies: [], babyLog: [], workouts: [], supplements: [], suppTaken: {}, illnesses: [], healthLog: [],
       hidden: [], gEvents: [], gSyncedAt: null,
       settings: {
-        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, dinnerPresets: ['Dutch Oven Potatoes', 'Meatballs and Spaghetti'],
+        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, dinnerPresets: [], dinnerSeed: 0,
         google: { clientId: '', connected: false, accounts: [], calendars: {}, defaultCal: '' },
       },
       ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan' },
@@ -2015,7 +2015,7 @@
           <select data-setting="dayStart" data-num="1">${[5, 6, 7, 8, 9].map(h => opt(h, fmtHourLabel(h), s.dayStart)).join('')}</select>
           <span class="muted">to</span>
           <select data-setting="dayEnd" data-num="1">${[18, 19, 20, 21, 22, 23, 24].map(h => opt(h, fmtHourLabel(h), s.dayEnd)).join('')}</select></label>
-        <label class="field"><span>Our dinners <small class="muted">(one per line — shown as a dropdown when picking dinner)</small></span><textarea rows="4" data-setting-lines="dinnerPresets">${esc((s.dinnerPresets || []).join('\n'))}</textarea></label>
+        ${(seedDinners(), '')}<label class="field"><span>Our dinners <small class="muted">(one per line — shown as a dropdown when picking dinner)</small></span><textarea rows="4" data-setting-lines="dinnerPresets">${esc((s.dinnerPresets || []).join('\n'))}</textarea></label>
         <label class="field inline"><span>Show dinner on the week view</span><select data-setting="showMeals" data-bool="1">${opt('true', 'Yes', s.showMeals)}${opt('false', 'No', s.showMeals)}</select></label>
         <label class="field inline"><span>Photo frame starts after</span><select data-setting="screensaverMin" data-num="1">${[[0, 'Never'], [1, '1 minute'], [5, '5 minutes'], [10, '10 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour']].map(([v, l]) => opt(v, l, s.screensaverMin)).join('')}</select></label>
       </section>
@@ -2429,7 +2429,19 @@
     });
   }
 
+  // Built-in dinner list. Bump DINNER_SEED when adding names so boards that already exist pick them up once.
+  const DINNER_DEFAULTS = ['Dutch Oven Potatoes', 'Meatballs and Spaghetti', 'Moldovan Pie', 'Grilled Chicken Salad', 'Orange Chicken', 'Roasted Chicken and Potatoes',
+    'Honey Lime Chicken and Avocado Salad', 'Mashed Potatoes and Fried Fish', 'Mămăligă cu tocăniță', 'Baked Salmon and Asparagus', 'Stuffed Peppers', 'Chicken Quesadillas', 'Ciorbă de perișoare'];
+  const DINNER_SEED = 2;
+  function seedDinners() {
+    const st = state.settings;
+    if ((st.dinnerSeed || 0) >= DINNER_SEED) return;
+    const have = new Set((st.dinnerPresets || []).map(x => x.toLowerCase()));
+    st.dinnerPresets = [...(st.dinnerPresets || []), ...DINNER_DEFAULTS.filter(x => !have.has(x.toLowerCase()))];
+    st.dinnerSeed = DINNER_SEED; save();
+  }
   function mealModal(ds, type) {
+    seedDinners();
     const label = MEAL_TYPES.find(m => m[0] === type) || MEAL_TYPES[2];
     const raw = state.meals[ds] && state.meals[ds][type];
     const cur = mealName(raw), curRec = mealRecipeId(raw);
