@@ -2450,7 +2450,8 @@
     }
     return h;
   }
-  const shortDate = ds => { const x = parse(ds); return `${MON[x.getMonth()]} ${x.getDate()}${x.getFullYear() !== today().getFullYear() ? `, ${x.getFullYear()}` : ''}`; };
+  const ordinal = n => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th')}`;
+  const shortDate = ds => { const x = parse(ds); return `${MON[x.getMonth()]} ${ordinal(x.getDate())}${x.getFullYear() !== today().getFullYear() ? `, ${x.getFullYear()}` : ''}`; };
   function dinnerOptions(cur, ds) {
     const h = dinnerHistory(ds), list = state.settings.dinnerPresets || [];
     const info = n => h[n.toLowerCase()] || { count: 0, last: '', next: '' };
@@ -2458,7 +2459,7 @@
     const key = n => { const r = info(n); return r.next || r.last || ''; };
     const sorted = list.map((n, i) => ({ n, i })).sort((a, b) => key(a.n).localeCompare(key(b.n)) || a.i - b.i);
     return sorted.map(({ n }) => { const r = info(n);
-      const note = [r.count ? `${r.count}× in last year` : '', r.last ? `last ${shortDate(r.last)}` : '', r.next ? `planned ${shortDate(r.next)}` : ''].filter(Boolean).join(' · ');
+      const note = [r.count ? `Count ${r.count}` : '', r.last ? `Last ${shortDate(r.last)}` : '', r.next ? `Planned ${shortDate(r.next)}` : ''].filter(Boolean).join(' - ');
       return `<option value="${esc(n)}" ${n === cur ? 'selected' : ''}>${esc(n)}${note ? ` — ${note}` : ''}</option>`; }).join('');
   }
   function seedDinners() {
