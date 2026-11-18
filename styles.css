@@ -687,3 +687,4 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
 .cm-n { width: 26px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 .cm-n.all { color: #3BAF6A; font-weight: 900; }
 @media (max-width: 700px) { .cm-name { display: none; } .cm-cell { min-height: 80px; padding: 4px; } }
+.linkish { border: 0; background: none; color: var(--accent); font-weight: 800; padding: 4px 0; cursor: pointer; text-align: left; }
