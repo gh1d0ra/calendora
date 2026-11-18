@@ -2435,8 +2435,10 @@
     'Morcovi cu coriandru și cotlete', 'Creamy Chicken and Mushroom', 'Chicken Fried Rice', 'Chicken Noodle Soup', 'Beef Stew', 'Chicken Livers and Potatoes',
     'Tomato Soup and Grilled Cheese Sandwiches', 'Chicken Salad Sandwich', 'Lasagna', 'Chickpea and Spicy Cucumber Salad', 'Pulled Pork and Coleslaw', 'Baked Brussels Sprouts', 'Meatball Subs',
     'Chicken Kebab with Tzatziki Sauce and Rice', 'Chicken Spinach Meatballs', 'Taquitos', 'Broccoli Chicken Alfredo', 'Mexican Beef and Rice Skillet',
-    'Sweet Potato Salad', 'Mushroom and Green Bean Salad', 'Grilled Chicken Thighs'];
-  const DINNER_SEED = 5;
+    'Sweet Potato Salad', 'Mushroom and Green Bean Salad', 'Grilled Chicken Thighs',
+    'Turkey Chili', 'Loaded Potato Soup', 'Pârjoale', 'Plăcintă', 'Air Fryer Wings with Carrots and Celery', 'Chicken Spiedini', 'Burgers',
+    'Spaghetti with Shrimp', 'Spaghetti with Beef Ragù'];
+  const DINNER_SEED = 6;
   // For each dinner name: times made in the last 365 days, last date made (today or earlier) and next planned date.
   function dinnerHistory(skipDs) {
     const t = todayStr(), yearAgo = ymd(addDays(today(), -365)), h = {};
