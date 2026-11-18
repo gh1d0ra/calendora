@@ -2881,7 +2881,9 @@
 
   // swipe left / right to move between days, weeks and months
   let touch = null;
-  $('#view').addEventListener('touchstart', e => { if (e.touches.length === 1) touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() }; }, { passive: true });
+  // Swipes that start inside something that scrolls sideways (week grids, chore columns, meal plan) scroll it instead of changing the date.
+  const sideScroller = el => { for (; el && el !== document.body; el = el.parentElement) { if (el.scrollWidth > el.clientWidth + 2 && /auto|scroll/.test(getComputedStyle(el).overflowX)) return el; } return null; };
+  $('#view').addEventListener('touchstart', e => { if (e.touches.length === 1 && !sideScroller(e.target)) touch = { x: e.touches[0].clientX, y: e.touches[0].clientY, t: Date.now() }; else touch = null; }, { passive: true });
   $('#view').addEventListener('touchend', e => {
     if (!touch) return;
     const dx = e.changedTouches[0].clientX - touch.x, dy = e.changedTouches[0].clientY - touch.y;
