@@ -452,6 +452,77 @@ async function anylistSyncOnce(db, env, board, version, cfg) {
 }
 
 // ------------------------------------------------------------------ API
+const AMZ_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
+async function amazonAlbumFromBoard(db, id) {
+  if (!id) return null;
+  const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(BOARD_ID).first();
+  let albums = [];
+  try { albums = row ? ((JSON.parse(row.data).settings || {}).amazonAlbums || []) : []; } catch (e) { albums = []; }
+  return albums.find(a => a && a.id === id) || null;
+}
+function cookieJar() {
+  const jar = new Map();
+  return {
+    take(res) { const all = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [res.headers.get('Set-Cookie') || '']; all.forEach(c => { const m = /^\s*([^=;\s]+)=([^;]*)/.exec(c || ''); if (m) jar.set(m[1], m[2]); }); },
+    header() { return [...jar].map(([k, v]) => `${k}=${v}`).join('; '); },
+    get(k) { return jar.get(k); },
+  };
+}
+// Reads a public Amazon Photos shared album: share page → share's root node → album folder → photos.
+async function amazonList(shareUrl) {
+  let u;
+  try { u = new URL(String(shareUrl || '').trim()); } catch (e) { throw new Error('That isn’t a valid link'); }
+  const jar = cookieJar();
+  const get = async (href, accept) => {
+    let cur = href;
+    for (let i = 0; i < 6; i++) { // follow redirects by hand so cookies are kept
+      const r = await fetch(cur, { redirect: 'manual', headers: { 'User-Agent': AMZ_UA, Accept: accept, 'Accept-Language': 'en-US,en;q=0.9', Cookie: jar.header(), ...(accept.includes('json') ? { 'x-amzn-sessionid': jar.get('session-id') || '', Referer: href } : {}) } });
+      jar.take(r);
+      const loc = r.headers.get('Location');
+      if (r.status >= 300 && r.status < 400 && loc) { cur = new URL(loc, cur).href; continue; }
+      return { r, url: cur };
+    }
+    throw new Error('Too many redirects');
+  };
+  // short links (a.co / amzn.to) lead to the real share page
+  const page = await get(u.href, 'text/html,application/xhtml+xml');
+  const final = new URL(page.url);
+  if (!/(^|\.)amazon\.[a-z.]+$/.test(final.hostname)) throw new Error('That isn’t an Amazon Photos link');
+  const m = /\/photos\/share\/([\w-]+)/.exec(final.pathname) || /\/share\/([\w-]+)/.exec(final.pathname);
+  if (!m) throw new Error('Use the link from Share → Copy link in Amazon Photos');
+  const shareId = m[1], base = `${final.protocol}//${final.hostname}/drive/v1`;
+  const common = `shareId=${encodeURIComponent(shareId)}&resourceVersion=V2&ContentType=JSON`;
+  const j = async path => {
+    const { r } = await get(`${base}${path}${path.includes('?') ? '&' : '?'}${common}`, 'application/json, text/plain, */*');
+    if (r.status === 404) throw new Error('Album not found — is the share link still active?');
+    if (!r.ok) throw new Error(`Amazon answered ${r.status}`);
+    return r.json();
+  };
+  const share = await j(`/shares/${encodeURIComponent(shareId)}`);
+  const root = (share.nodeInfo && share.nodeInfo.id) || share.nodeId || (share.node && share.node.id);
+  if (!root) throw new Error('Could not read that album');
+  const filters = encodeURIComponent('kind:(FILE* OR FOLDER*) AND status:(AVAILABLE*)');
+  const children = async (id, token) => j(`/nodes/${encodeURIComponent(id)}/children?asset=ALL&limit=200&tempLink=true&searchOnFamily=false&sort=${encodeURIComponent("['contentProperties.contentDate DESC']")}&filters=${filters}${token ? `&startToken=${encodeURIComponent(token)}` : ''}`);
+  const photos = [];
+  let name = (share.nodeInfo && share.nodeInfo.name) || '';
+  const walk = async (id, depth) => {
+    let token = '';
+    do {
+      const page2 = await children(id, token);
+      for (const n of page2.data || []) {
+        if (n.kind === 'FOLDER' && depth < 2) { if (!name) name = n.name || ''; await walk(n.id, depth + 1); continue; }
+        const cp = n.contentProperties || {};
+        if (n.kind !== 'FILE' || !/^image\//.test(cp.contentType || '')) continue;
+        const img = cp.image || {};
+        photos.push({ id: n.id, link: n.tempLink || '', w: img.width || 0, h: img.height || 0, date: cp.contentDate || n.createdDate || '' });
+        if (photos.length >= 2000) return;
+      }
+      token = page2.nextToken || '';
+    } while (token && photos.length < 2000);
+  };
+  await walk(root, 0);
+  return { name, count: photos.length, photos };
+}
 const SNAP_MAX = 1900000; // D1 keeps up to ~2 MB in one value
 async function putSnapshot(db, key, data) {
   if (data.length > SNAP_MAX) return false;
@@ -670,6 +741,54 @@ async function handleApi(request, env, url, ctx) {
       if (!(await putSnapshot(db, `google:${acct}`, data))) return json({ error: 'Too many events to save a copy' }, 413);
       return json({ ok: true, at: Date.now() });
     }
+  }
+
+  // Amazon Photos shared albums (Share → "Copy link"). Amazon has no public photos API, so this reads a public
+  // shared album the same way Amazon's own share page does. The list is saved, so the frame keeps working if Amazon can't be reached.
+  if (path === '/api/amazon-photos' && method === 'GET') {
+    const album = await amazonAlbumFromBoard(db, url.searchParams.get('album'));
+    if (!album) return json({ error: 'Album not found' }, 404);
+    const key = `amazon:${album.id}`;
+    const saved = await db.prepare('SELECT data, updated_at FROM snapshots WHERE key = ?').bind(key).first();
+    const fresh = url.searchParams.get('fresh');
+    if (saved && !fresh && Date.now() - saved.updated_at < 30 * 60000) return json({ ...JSON.parse(saved.data), at: saved.updated_at });
+    try {
+      const list = await amazonList(album.url);
+      if (!list.photos.length) throw new Error('No photos found in that album');
+      await putSnapshot(db, key, JSON.stringify(list));
+      return json({ ...list, at: Date.now() });
+    } catch (e) {
+      if (saved) return json({ ...JSON.parse(saved.data), at: saved.updated_at, warning: `${e.message} — showing the list saved ${new Date(saved.updated_at).toISOString()}` });
+      return json({ error: e.message || 'Could not read that album' }, 502);
+    }
+  }
+  if (path === '/api/amazon-photo' && method === 'GET') {
+    const album = await amazonAlbumFromBoard(db, url.searchParams.get('album'));
+    const node = url.searchParams.get('node') || '';
+    const w = Math.min(3840, Math.max(200, Number(url.searchParams.get('w')) || 1920));
+    if (!album || !/^[\w-]{6,80}$/.test(node)) return json({ error: 'Photo not found' }, 404);
+    const cache = caches.default, cacheKey = new Request(`https://amazon-photo.calendora/${album.id}/${node}/${w}`);
+    const hit = await cache.match(cacheKey);
+    if (hit) return hit;
+    const saved = await db.prepare('SELECT data FROM snapshots WHERE key = ?').bind(`amazon:${album.id}`).first();
+    let photo = null;
+    try { photo = saved ? (JSON.parse(saved.data).photos || []).find(p => p.id === node) : null; } catch (e) { photo = null; }
+    if (!photo) return json({ error: 'Photo not found' }, 404);
+    const tryLink = link => fetch(`${link}${link.includes('?') ? '&' : '?'}viewBox=${w}`, { headers: { 'User-Agent': AMZ_UA } });
+    let r = photo.link ? await tryLink(photo.link).catch(() => null) : null;
+    if (!r || !r.ok) {
+      // links expire: read the album again for fresh ones
+      try {
+        const list = await amazonList(album.url);
+        await putSnapshot(db, `amazon:${album.id}`, JSON.stringify(list));
+        const p2 = list.photos.find(p => p.id === node);
+        r = p2 && p2.link ? await tryLink(p2.link) : null;
+      } catch (e) { r = null; }
+    }
+    if (!r || !r.ok) return json({ error: 'Could not load that photo' }, 502);
+    const res = new Response(r.body, { headers: { 'Content-Type': r.headers.get('Content-Type') || 'image/jpeg', 'Cache-Control': 'private, max-age=86400' } });
+    ctx && ctx.waitUntil(cache.put(cacheKey, res.clone()));
+    return res;
   }
 
   if (path === '/api/ical' && method === 'GET') {

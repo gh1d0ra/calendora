@@ -96,7 +96,7 @@
       members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [], babies: [], babyLog: [], workouts: [], supplements: [], suppTaken: {}, illnesses: [], healthLog: [],
       hidden: [], gEvents: [], gSyncedAt: null, gAcctAt: {},
       settings: {
-        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, dinnerPresets: [], dinnerSeed: 0,
+        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, dinnerPresets: [], dinnerSeed: 0, amazonAlbums: [], framePhone: true,
         google: { clientId: '', connected: false, accounts: [], calendars: {}, defaultCal: '' },
       },
       ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan' },
@@ -2041,13 +2041,60 @@
   }
 
   // ---------------------------------------------------------------- photos
+  // ---- Amazon Photos shared albums for the photo frame (read through the server; list cached on this device for offline)
+  const AMZ_KEY = 'calendora.amazon';
+  const amz = { lists: {}, loading: {}, errors: {}, checked: {} };
+  try { amz.lists = JSON.parse(localStorage.getItem(AMZ_KEY) || '{}') || {}; } catch (e) { amz.lists = {}; }
+  const amzAlbums = () => (Array.isArray(state.settings.amazonAlbums) ? state.settings.amazonAlbums : []);
+  const amzSave = () => { try { localStorage.setItem(AMZ_KEY, JSON.stringify(amz.lists)); } catch (e) { /* full */ } };
+  function amzLoad(a, fresh) {
+    if (!cloudOn()) return Promise.resolve();
+    if (amz.loading[a.id]) return amz.loading[a.id].then(() => (fresh ? amzLoad(a, true) : undefined));
+    amz.checked[a.id] = Date.now();
+    const p = amzFetch(a, fresh).finally(() => { amz.loading[a.id] = null; });
+    amz.loading[a.id] = p;
+    return p;
+  }
+  async function amzFetch(a, fresh) {
+    try {
+      const r = await api(`/api/amazon-photos?album=${enc(a.id)}${fresh ? '&fresh=1' : ''}`);
+      if (r.ok && r.data && Array.isArray(r.data.photos)) {
+        amz.lists[a.id] = { name: r.data.name, at: r.data.at, ids: r.data.photos.map(p => p.id), warning: r.data.warning || '' };
+        delete amz.errors[a.id]; amzSave();
+        if (!a.name && r.data.name) { state.settings.amazonAlbums = amzAlbums().map(x => (x.id === a.id ? { ...x, name: r.data.name } : x)); save(); }
+      } else amz.errors[a.id] = (r.data && r.data.error) || 'Could not read that album';
+    } catch (e) { amz.errors[a.id] = 'Offline — using the saved list'; }
+  }
+  const amzUrl = (albumId, node, w) => `/api/amazon-photo?album=${enc(albumId)}&node=${enc(node)}&w=${w}`;
+  function amzSlides(w) {
+    const out = [];
+    amzAlbums().forEach(a => { const l = amz.lists[a.id]; if (l) l.ids.forEach(id => out.push(amzUrl(a.id, id, w))); });
+    return out;
+  }
+  function amazonCard() {
+    const albums = amzAlbums();
+    return `<div class="card amz-card">
+      <div class="sec-head"><h3>🖼️ Amazon Photos</h3>${albums.length ? '<button class="btn small" data-action="amz-refresh">Refresh</button>' : ''}</div>
+      <p class="muted small">Show a shared Amazon Photos album on the frame. In Amazon Photos open the album, tap <b>Share</b> → <b>Copy link</b>, and paste it here. New photos you add to that album show up automatically. Anyone with the link can view the album.</p>
+      ${albums.map(a => { const l = amz.lists[a.id], err = amz.errors[a.id];
+        return `<div class="amz-album"><div class="amz-main"><b>${esc(a.name || (l && l.name) || 'Shared album')}</b>
+          <small class="${err ? 'warn-text' : 'muted'}">${amz.loading[a.id] ? 'Loading…' : err ? esc(err) + (l ? ` · ${l.ids.length} photos saved` : '') : l ? `${l.ids.length} photos · checked ${timeAgo(l.at)}${l.warning ? ' · Amazon unreachable, using saved list' : ''}` : 'Not loaded yet'}</small></div>
+          <button class="btn ghost small" data-action="amz-remove" data-id="${a.id}">Remove</button></div>`; }).join('')}
+      <form class="amz-add row" data-form="amz-add"><input name="url" placeholder="https://www.amazon.com/photos/share/…" autocomplete="off"><button class="btn primary" type="submit">${icon('plus')} Add album</button></form>
+      <label class="switch"><input type="checkbox" data-setting-bool="framePhone" ${state.settings.framePhone !== false ? 'checked' : ''}><span class="track"></span><span>Also show photos added on this device</span></label>
+    </div>`;
+  }
   async function renderPhotos() {
     $('#toolbar').innerHTML = `<h1>Photo frame</h1><span class="muted sub">Shown as a slideshow when the calendar sits idle.</span><span class="spacer"></span>
       <button class="btn" data-action="sleep">${icon('sleep')} Start slideshow</button>
       <button class="btn primary" data-action="upload-photos">${icon('plus')} Add photos</button>`;
     const photos = await getPhotos();
     if (state.ui.view !== 'photos') return;
+    amzAlbums().forEach(a => { if (!amz.loading[a.id] && Date.now() - (amz.checked[a.id] || 0) > 10 * 60000) amzLoad(a).then(() => { if (state.ui.view === 'photos') renderPhotos(); }); });
+    const amzThumbs = amzSlides(360).slice(0, 60);
     $('#view').innerHTML = `<div class="photos">
+      ${amazonCard()}
+      ${amzThumbs.length ? `<h3 class="photos-h">From Amazon Photos <small class="muted">${amzSlides(360).length} photos${amzSlides(360).length > 60 ? ' · showing 60' : ''}</small></h3><div class="photo-grid">${amzThumbs.map(u => `<div class="photo" style="background-image:url('${u}')"></div>`).join('')}</div><h3 class="photos-h">On this device</h3>` : ''}
       ${photos.length ? `<div class="photo-grid">${photos.map(p => `<div class="photo" style="background-image:url('${p.url}')"><button class="mini-btn corner light" data-action="delete-photo" data-id="${p.id}" aria-label="Delete photo">${icon('trash')}</button></div>`).join('')}</div>`
         : `<div class="empty card"><div class="scene-row">${SCENES.map(s => `<div class="scene" style="background:${s}"></div>`).join('')}</div>
             <p>No photos yet — the frame will show these color scenes until you add your own.<br><span class="muted">Photos stay in this browser on this device.</span></p>
@@ -2792,6 +2839,8 @@
       save(); renderView(); toast(n ? 'Copied last week’s meals into empty slots' : 'Last week has no meals to copy');
     },
     'upload-photos'() { $('#photoInput').click(); },
+    async 'amz-refresh'() { await Promise.all(amzAlbums().map(a => amzLoad(a, true))); renderView(); toast('Albums refreshed'); },
+    'amz-remove'(el) { const a = amzAlbums().find(x => x.id === el.dataset.id); if (!a) return; choice('Remove this album?', 'Its photos stop showing on the frame. The album in Amazon Photos isn’t touched.', [{ label: 'Remove', cls: 'danger', fn: () => { state.settings.amazonAlbums = amzAlbums().filter(x => x.id !== a.id); delete amz.lists[a.id]; amzSave(); save(); renderView(); } }]); },
     async 'delete-photo'(el) { await photoDB.del(el.dataset.id); const u = photoUrls.get(el.dataset.id); if (u) URL.revokeObjectURL(u); photoUrls.delete(el.dataset.id); renderView(); },
     sleep() { startScreensaver(); },
     fullscreen() {
@@ -2840,6 +2889,20 @@
     const f = evt.target.closest('[data-form]'); if (!f) return;
     evt.preventDefault();
     if (f.dataset.form === 'setup' || f.dataset.form === 'login') { lockSubmit(f); return; }
+    if (f.dataset.form === 'amz-add') {
+      const url = f.elements.url.value.trim();
+      if (!/^https?:\/\/(www\.)?(amazon\.[a-z.]+\/(photos\/)?share\/|a\.co\/|amzn\.to\/)\S+/i.test(url)) { toast('Paste the link from Amazon Photos → Share → Copy link'); return; }
+      if (amzAlbums().some(x => x.url === url)) { toast('That album is already added'); return; }
+      if (!cloudOn()) { toast('Sign in to the family board first'); return; }
+      const a = { id: uid(), url, name: '' };
+      state.settings.amazonAlbums = [...amzAlbums(), a]; save(); renderView();
+      await cloudPush(true).catch(() => {}); // the server reads album links from the family board
+      await amzLoad(a, true);
+      if (amz.errors[a.id] === 'Album not found') { await new Promise(ok => setTimeout(ok, 2000)); await amzLoad(a, true); }
+      renderView();
+      toast(amz.lists[a.id] ? `Added ${amz.lists[a.id].ids.length} photos to the frame` : amz.errors[a.id] || 'Could not read that album');
+      return;
+    }
     if (f.dataset.form === 'ical-add') {
       const url = f.elements.url.value.trim();
       if (!/^(webcals?|https?):\/\/\S+$/i.test(url)) { toast('Paste the link that starts with webcal://'); return; }
@@ -3581,8 +3644,12 @@
     if (ssOn) return;
     ssOn = true;
     closeModal();
-    const photos = await getPhotos();
-    ssSlides = photos.length ? photos.map(p => `url('${p.url}') center/cover no-repeat`) : SCENES;
+    const photos = state.settings.framePhone === false && amzAlbums().length ? [] : await getPhotos();
+    amzAlbums().forEach(a => { if (!amz.lists[a.id]) amzLoad(a); });
+    const w = Math.min(2560, Math.round(Math.max(screen.width, screen.height) * Math.min(devicePixelRatio || 1, 2)));
+    const all = [...photos.map(p => p.url), ...amzSlides(w)];
+    for (let i = all.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [all[i], all[j]] = [all[j], all[i]]; }
+    ssSlides = all.length ? all.map(u => `url('${u}') center/cover no-repeat`) : SCENES;
     ssIdx = Math.floor(Math.random() * ssSlides.length);
     ss.innerHTML = `<div class="ss-slide" id="ssA"></div><div class="ss-slide" id="ssB"></div><div class="ss-shade"></div>
       <div class="ss-info"><div class="ss-time" id="ssTime"></div><div class="ss-date" id="ssDate"></div><div class="ss-weather" id="ssWeather"></div></div>
@@ -3600,6 +3667,8 @@
     show.style.background = ssSlides[ssIdx];
     show.classList.remove('kb'); void show.offsetWidth; show.classList.add('kb', 'show');
     hide.classList.remove('show');
+    const next = ssSlides[(ssIdx + 1) % ssSlides.length], m = /url\('([^']+)'\)/.exec(next || '');
+    if (m) { const im = new Image(); im.src = m[1]; } // warm the next photo so it doesn't pop in
   }
   function updateScreensaver() {
     if (!ssOn) return;
