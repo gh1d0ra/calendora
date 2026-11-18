@@ -1126,6 +1126,18 @@
     });
   }
 
+  let installPrompt = null;
+  const isInstalled = () => matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches || navigator.standalone === true;
+  function installSection() {
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    let body;
+    if (isInstalled()) body = '<p>✅ You’re using the installed app.</p>';
+    else if (installPrompt) body = `<p class="muted small">Adds Calendora to your home screen; it opens full screen like any other app.</p><button class="btn primary" data-action="install-app">${icon('plus')} Install app</button>`;
+    else if (ios) body = '<p>On iPad or iPhone: open this page in <b>Safari</b>, tap the <b>Share</b> button, then <b>Add to Home Screen</b>.</p>';
+    else body = '<p>On Android: open this page in <b>Chrome</b>, tap the <b>⋮</b> menu, then <b>Install app</b> (or <b>Add to Home screen</b>).</p>';
+    return `<section class="card"><h3>Install as an app</h3>${body}</section>`;
+  }
+
   // ---------------------------------------------------------------- render: shell
   const NAV = [
     ['calendar', 'Calendar'], ['chores', 'Chores'], ['rewards', 'Rewards'],
@@ -1997,6 +2009,7 @@
             <button class="btn" data-action="edit-member" data-id="${m.id}">${icon('edit')} Edit</button></div>`).join('') || '<div class="empty-sm">No family members yet.</div>'}
         </div>
       </section>
+      ${installSection()}
       <section class="card">
         <h3>Health</h3>
         <label class="switch"><input type="checkbox" data-setting-bool="healthEnabled" ${state.settings.healthEnabled ? 'checked' : ''}><span class="track"></span><span>Show the Health section in the menu</span></label>
@@ -2587,6 +2600,7 @@
     },
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
+    async 'install-app'() { if (!installPrompt) return; installPrompt.prompt(); const r = await installPrompt.userChoice.catch(() => null); installPrompt = null; if (r && r.outcome !== 'accepted') toast('You can install it any time from Settings'); renderView(); },
     'h-who'(el) { hUI.who = el.dataset.id; renderView(); },
     'h-workout'(el) { workoutModal(hArr('workouts').find(w => w.id === el.dataset.id)); },
     'h-supp'(el, ev) { if (ev) ev.preventDefault(); suppModal(hArr('supplements').find(x => x.id === el.dataset.id)); },
@@ -3570,6 +3584,10 @@
   // keep Google in step: every 5 minutes, and whenever the tab comes back into view
   setInterval(() => { if (gAccounts().some(gHasToken)) gSync({ quiet: true }); else renderSyncPill(); }, 5 * 60 * 1000);
   setInterval(renderSyncPill, 60 * 1000);
+  // Installable app: offline start-up plus the browser's "Install app" prompt.
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; if (state.ui.view === 'settings') renderView(); });
+  addEventListener('appinstalled', () => { installPrompt = null; toast('Calendora installed 🎉'); if (state.ui.view === 'settings') renderView(); });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && gAccounts().some(gHasToken) && Date.now() - (state.gSyncedAt || 0) > 60000) gSync({ quiet: true });
   });
