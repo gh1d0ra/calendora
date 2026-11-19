@@ -125,7 +125,7 @@
       members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [], babies: [], babyLog: [], workouts: [], supplements: [], suppTaken: {}, illnesses: [], healthLog: [],
       hidden: [], gEvents: [], gSyncedAt: null, gAcctAt: {},
       settings: {
-        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, dinnerPresets: [], dinnerSeed: 0,
+        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, newsEnabled: true, newsFeeds: [{ id: 'npr', name: 'NPR News', url: 'https://feeds.npr.org/1001/rss.xml' }, { id: 'bbcworld', name: 'BBC World', url: 'https://feeds.bbci.co.uk/news/world/rss.xml' }], dinnerPresets: [], dinnerSeed: 0,
         google: { clientId: '', connected: false, accounts: [], calendars: {}, defaultCal: '' },
       },
       ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan', textSize: 0.85 },
@@ -1252,6 +1252,69 @@
     return `<section class="card"><h3>Install as an app</h3>${body}<div class="row"><button class="btn" data-action="reload-app">↻ Reload app</button><span class="muted small">Loads the newest version. Calendora also offers this by itself when an update is out.</span></div></section>`;
   }
 
+  // ---------------------------------------------------------------- news (RSS headlines on the idle screen)
+  const NEWS_PRESETS = [
+    ['NPR News', 'https://feeds.npr.org/1001/rss.xml'], ['NPR World', 'https://feeds.npr.org/1004/rss.xml'],
+    ['BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'], ['BBC US & Canada', 'https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml'],
+    ['The Guardian US', 'https://www.theguardian.com/us-news/rss'], ['CBS News', 'https://www.cbsnews.com/latest/rss/main'],
+  ];
+  const news = { items: [], feeds: [], at: 0, idx: 0, timer: null, loading: null };
+  try { const c = JSON.parse(localStorage.getItem('calendora.news') || 'null'); if (c && Array.isArray(c.items)) Object.assign(news, { items: c.items, at: c.at || 0 }); } catch (e) { /* none */ }
+  const newsFeeds = () => (Array.isArray(state.settings.newsFeeds) ? state.settings.newsFeeds : []);
+  function loadNews(force) {
+    if (!cloudOn() || !cloud.signedIn) return Promise.resolve();
+    if (news.loading) return news.loading;
+    if (!force && Date.now() - news.at < 10 * 60000 && news.items.length) return Promise.resolve();
+    news.loading = api('/api/news').then(r => {
+      if (r.ok && r.data) {
+        news.items = (r.data.items || []).filter(x => x.title); news.feeds = r.data.feeds || []; news.at = Date.now();
+        try { localStorage.setItem('calendora.news', JSON.stringify({ items: news.items.slice(0, 60), at: news.at })); } catch (e) { /* full */ }
+      }
+    }).catch(() => {}).finally(() => { news.loading = null; });
+    return news.loading;
+  }
+  function showHeadline() {
+    const box = $('#ssNews');
+    if (!box) return;
+    if (!state.settings.newsEnabled || !news.items.length) { box.hidden = true; return; }
+    news.idx = news.idx % news.items.length;
+    const it = news.items[news.idx];
+    box.hidden = false;
+    box.classList.remove('in'); void box.offsetWidth;
+    box.innerHTML = `<div class="ssn-src">📰 ${esc(it.source || '')}${it.time ? ` · ${timeAgo(it.time)}` : ''}</div><div class="ssn-title">${esc(it.title)}</div>${it.link ? '<div class="ssn-open">Tap to read ›</div>' : ''}`;
+    box.dataset.link = it.link || '';
+    box.classList.add('in');
+  }
+  function startNews() {
+    clearInterval(news.timer);
+    if (!state.settings.newsEnabled) return;
+    news.idx = Math.floor(Math.random() * Math.max(1, news.items.length));
+    showHeadline();
+    loadNews().then(showHeadline);
+    news.timer = setInterval(() => { news.idx++; showHeadline(); if (Date.now() - news.at > 15 * 60000) loadNews(); }, 10000);
+  }
+  function newsSection() {
+    const fs = newsFeeds(), st = Object.fromEntries((news.feeds || []).map(f => [f.id, f]));
+    return `<section class="card">
+      <h3>News on the idle screen</h3>
+      <label class="switch"><input type="checkbox" data-setting-bool="newsEnabled" ${state.settings.newsEnabled ? 'checked' : ''}><span class="track"></span><span>Show headlines on the idle screen</span></label>
+      ${state.settings.newsEnabled ? `
+      <p class="muted small">Headlines rotate every 10 seconds, with the outlet's name. Tap one to read the full story on the outlet's site.</p>
+      <div class="news-feeds">${fs.map(f => { const s = st[f.id]; return `<div class="news-feed"><div class="nf-main"><b>${esc(f.name || f.url)}</b><small class="${s && s.error ? 'warn-text' : 'muted'}">${s ? (s.error ? esc(s.error) : `${s.count} headlines`) : esc(f.url)}</small></div><button class="btn ghost small" data-action="news-remove" data-id="${f.id}">Remove</button></div>`; }).join('') || '<div class="empty-sm">No sources yet — add one below.</div>'}</div>
+      <div class="news-presets">${NEWS_PRESETS.filter(([, u]) => !fs.some(f => f.url === u)).map(([n, u]) => `<button class="hchip" data-action="news-add-preset" data-name="${esc(n)}" data-url="${esc(u)}">${icon('plus')} ${esc(n)}</button>`).join('')}</div>
+      <form class="row news-add" data-form="news-add"><input name="name" placeholder="Name (e.g. Local TV)" maxlength="40"><input name="url" placeholder="RSS feed link (https://…)" autocomplete="off"><button class="btn primary" type="submit">${icon('plus')} Add</button></form>
+      <p class="muted small">Most news sites publish an RSS feed — search the site for “RSS”. Local TV stations usually have one for local news.</p>` : ''}
+    </section>`;
+  }
+  function newsAdd(name, url) {
+    if (!/^https?:\/\/\S+\.\S+/i.test(url)) { toast('Paste a full feed link starting with https://'); return; }
+    if (newsFeeds().some(f => f.url === url)) { toast('That source is already added'); return; }
+    if (newsFeeds().length >= 8) { toast('Up to 8 sources'); return; }
+    state.settings.newsFeeds = [...newsFeeds(), { id: uid(), name: name || '', url }];
+    save(); renderView();
+    cloudPush(true).catch(() => {}).then(() => loadNews(true)).then(() => { renderView(); const s = (news.feeds || []).find(f => f.url === url || f.id === state.settings.newsFeeds[state.settings.newsFeeds.length - 1].id); toast(s && s.error ? s.error : 'News source added'); });
+  }
+
   // ---------------------------------------------------------------- render: shell
   const NAV = [
     ['calendar', 'Calendar'], ['chores', 'Chores'], ['rewards', 'Rewards'],
@@ -2133,6 +2196,7 @@
         </div>
       </section>
       ${installSection()}
+      ${newsSection()}
       <section class="card">
         <h3>Health</h3>
         <label class="switch"><input type="checkbox" data-setting-bool="healthEnabled" ${state.settings.healthEnabled ? 'checked' : ''}><span class="track"></span><span>Show the Health section in the menu</span></label>
@@ -2739,6 +2803,8 @@
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
     'reload-app'() { location.reload(); },
+    'news-add-preset'(el) { newsAdd(el.dataset.name, el.dataset.url); },
+    'news-remove'(el) { state.settings.newsFeeds = newsFeeds().filter(f => f.id !== el.dataset.id); save(); renderView(); news.items = news.items.filter(x => x.feed !== el.dataset.id); },
     'member-chores'(el) { const m = state.members.find(x => x.id === el.dataset.id); if (!m) return; m.noChores = !m.noChores; ui.choreCol = 0; save(); renderView(); toast(m.noChores ? `${m.name} is hidden from Chores` : `${m.name} is back in Chores`); },
     async 'install-app'() { if (!installPrompt) return; installPrompt.prompt(); const r = await installPrompt.userChoice.catch(() => null); installPrompt = null; if (r && r.outcome !== 'accepted') toast('You can install it any time from Settings'); renderView(); },
     'h-who'(el) { hUI.who = el.dataset.id; renderView(); },
@@ -2914,6 +2980,7 @@
     const f = evt.target.closest('[data-form]'); if (!f) return;
     evt.preventDefault();
     if (f.dataset.form === 'setup' || f.dataset.form === 'login') { lockSubmit(f); return; }
+    if (f.dataset.form === 'news-add') { newsAdd(f.elements.name.value.trim(), f.elements.url.value.trim()); return; }
     if (f.dataset.form === 'ical-add') {
       const url = f.elements.url.value.trim();
       if (!/^(webcals?|https?):\/\/\S+$/i.test(url)) { toast('Paste the link that starts with webcal://'); return; }
@@ -3646,12 +3713,13 @@
     ssIdx = Math.floor(Math.random() * ssSlides.length);
     ss.innerHTML = `<div class="ss-slide" id="ssA"></div><div class="ss-slide" id="ssB"></div><div class="ss-shade"></div>
       <div class="ss-info"><div class="ss-time" id="ssTime"></div><div class="ss-date" id="ssDate"></div><div class="ss-weather" id="ssWeather"></div></div>
-      <div class="ss-events" id="ssEvents"></div><div class="ss-hint">Tap anywhere to return</div>`;
+      <div class="ss-events" id="ssEvents"></div><div class="ss-news" id="ssNews" hidden></div><div class="ss-hint">Tap anywhere to return</div>`;
     ss.hidden = false;
     requestAnimationFrame(() => ss.classList.add('on'));
     showSlide();
     updateScreensaver();
     ssTimer = setInterval(() => { ssIdx = (ssIdx + 1) % ssSlides.length; showSlide(); }, 12000);
+    startNews();
   }
   function showSlide() {
     ssFlip = !ssFlip;
@@ -3677,13 +3745,18 @@
   }
   function stopScreensaver() {
     if (!ssOn) return;
-    ssOn = false; clearInterval(ssTimer);
+    ssOn = false; clearInterval(ssTimer); clearInterval(news.timer);
     ss.classList.remove('on');
     setTimeout(() => { if (!ssOn) { ss.hidden = true; ss.innerHTML = ''; } }, 400);
     lastActive = Date.now();
     goToday();
   }
-  ss.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); stopScreensaver(); });
+  ss.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();
+    const n = e.target.closest('#ssNews');
+    if (n && n.dataset.link) { window.open(n.dataset.link, '_blank', 'noopener'); return; } // read the story; the idle screen stays
+    stopScreensaver();
+  });
 
   // ---------------------------------------------------------------- tick
   let lastDay = todayStr();
