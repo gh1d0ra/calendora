@@ -452,6 +452,43 @@ async function anylistSyncOnce(db, env, board, version, cfg) {
 }
 
 // ------------------------------------------------------------------ API
+// ---- RSS / Atom headlines
+const DEFAULT_NEWS = [{ id: 'npr', name: 'NPR News', url: 'https://feeds.npr.org/1001/rss.xml' }, { id: 'bbcworld', name: 'BBC World', url: 'https://feeds.bbci.co.uk/news/world/rss.xml' }];
+function xmlText(s) {
+  return String(s || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/<[^>]+>/g, '')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ').trim();
+}
+const xmlTag = (block, tag) => { const m = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'i').exec(block); return m ? m[1] : ''; };
+function parseFeed(xml) {
+  const feedTitle = xmlText(xmlTag(xml.replace(/<(item|entry)[\s>][\s\S]*$/i, ''), 'title'));
+  const blocks = xml.match(/<item[\s>][\s\S]*?<\/item>/gi) || xml.match(/<entry[\s>][\s\S]*?<\/entry>/gi) || [];
+  return blocks.map(b => {
+    const title = xmlText(xmlTag(b, 'title'));
+    let link = xmlText(xmlTag(b, 'link'));
+    if (!link) { const m = /<link\b[^>]*?href=["']([^"']+)["'][^>]*>/i.exec(b); link = m ? m[1].replace(/&amp;/g, '&') : ''; }
+    if (!/^https?:\/\//i.test(link)) { const g = xmlText(xmlTag(b, 'guid')); if (/^https?:\/\//i.test(g)) link = g; }
+    const when = xmlText(xmlTag(b, 'pubDate') || xmlTag(b, 'published') || xmlTag(b, 'updated') || xmlTag(b, 'dc:date'));
+    const t = Date.parse(when);
+    return { title: title.slice(0, 220), link: /^https?:\/\//i.test(link) ? link : '', time: Number.isFinite(t) ? t : 0, feedTitle };
+  }).filter(x => x.title);
+}
+async function readFeed(url, ctx) {
+  const cache = caches.default, key = new Request(`https://news-cache.calendora/${encodeURIComponent(url)}`);
+  const hit = await cache.match(key).catch(() => null);
+  if (hit) return hit.json();
+  let r;
+  try { r = await fetch(url, { headers: { 'User-Agent': 'Calendora family calendar (RSS reader)', Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.5' }, cf: { cacheTtl: 600 } }); }
+  catch (e) { throw new Error('Could not reach that feed'); }
+  if (!r.ok) throw new Error(`The feed answered ${r.status}`);
+  const text = (await r.text()).slice(0, 3000000);
+  if (!/<(rss|feed|rdf:RDF)[\s>]/i.test(text)) throw new Error('That link is not an RSS or Atom feed');
+  const items = parseFeed(text);
+  const res = new Response(JSON.stringify(items), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=900' } });
+  if (ctx) ctx.waitUntil(cache.put(key, res)); else await cache.put(key, res).catch(() => {});
+  return items;
+}
 const SNAP_MAX = 1900000; // D1 keeps up to ~2 MB in one value
 async function putSnapshot(db, key, data) {
   if (data.length > SNAP_MAX) return false;
@@ -670,6 +707,23 @@ async function handleApi(request, env, url, ctx) {
       if (!(await putSnapshot(db, `google:${acct}`, data))) return json({ error: 'Too many events to save a copy' }, 413);
       return json({ ok: true, at: Date.now() });
     }
+  }
+
+  // News headlines for the idle screen, from the RSS/Atom feeds saved in family settings.
+  // Only headline, link, time and outlet name are passed on — no article text.
+  if (path === '/api/news' && method === 'GET') {
+    const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(BOARD_ID).first();
+    let feeds = [];
+    try { const st = row ? (JSON.parse(row.data).settings || {}) : {}; feeds = Array.isArray(st.newsFeeds) ? st.newsFeeds : DEFAULT_NEWS; } catch (e) { feeds = DEFAULT_NEWS; }
+    feeds = feeds.filter(f => f && /^https?:\/\//i.test(f.url || '')).slice(0, 8);
+    const results = await Promise.all(feeds.map(async f => {
+      try { return { id: f.id, items: await readFeed(f.url, ctx), error: null }; }
+      catch (e) { return { id: f.id, items: [], error: e.message || 'Could not read that feed' }; }
+    }));
+    const items = [];
+    results.forEach((r, i) => r.items.slice(0, 15).forEach(it => items.push({ ...it, source: feeds[i].name || it.feedTitle || new URL(feeds[i].url).hostname.replace(/^www\./, ''), feed: feeds[i].id })));
+    items.sort((a, b) => (b.time || 0) - (a.time || 0));
+    return json({ items: items.slice(0, 60), feeds: results.map(r => ({ id: r.id, count: r.items.length, error: r.error })) });
   }
 
   if (path === '/api/ical' && method === 'GET') {
