@@ -1352,7 +1352,7 @@
       <div class="seg" role="tablist">
         ${[['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['schedule', 'Schedule']].map(([k, l]) => `<button class="${v === k ? 'on' : ''}" data-action="calview" data-v="${k}">${l}</button>`).join('')}
       </div>
-      ${v === 'week' ? `<div class="seg small" title="How events are laid out in the week">
+      ${v === 'week' ? `<div class="seg small week-layout-toggle" title="How events are laid out in the week">
         ${[['time', 'By time'], ['stack', 'Stacked']].map(([k, l]) => `<button class="${(state.ui.weekLayout || 'time') === k ? 'on' : ''}" data-action="week-layout" data-v="${k}">${l}</button>`).join('')}
       </div>` : ''}`;
     ({ month: renderMonth, week: renderWeek, day: renderDay, schedule: renderSchedule })[v]();
@@ -1396,8 +1396,10 @@
     </div>`;
   }
 
+  const isPhone = () => matchMedia('(max-width: 600px)').matches;
   function renderWeek() {
-    if ((state.ui.weekLayout || 'time') === 'time') { renderWeekByTime(); return; }
+    // phones always use the stacked week, one day per screen (swipe sideways for the next day)
+    if (!isPhone() && (state.ui.weekLayout || 'time') === 'time') { renderWeekByTime(); return; }
     const ws = startOfWeek(ui.cursor), t = todayStr();
     let cols = '';
     for (let i = 0; i < 7; i++) {
@@ -1417,6 +1419,10 @@
       </div>`;
     }
     $('#view').innerHTML = `<div class="week">${cols}</div>`;
+    if (isPhone()) {
+      const box = $('.week'), i = Math.max(0, Math.min(6, daysBetween(ws, ui.cursor)));
+      box.scrollLeft = i * box.clientWidth;
+    }
   }
 
   function layoutLanes(items) {
@@ -1634,7 +1640,17 @@
           <button class="add-row" data-action="new-chore" data-member="${m.id}">${icon('plus')} Add</button>
         </div>
       </div>`;
-    }).join('')}</div>`;
+    }).join('')}</div>
+    <div class="chore-dots">${state.members.map((m, i) => `<button class="${i === (ui.choreCol || 0) ? 'on' : ''}" style="--c:${m.color}" data-action="chore-col" data-i="${i}" aria-label="${esc(m.name)}">${esc(m.name)}</button>`).join('')}</div>`;
+    // phones: one person per screen; swipe sideways for the next person
+    const box = $('.chores');
+    if (box && matchMedia('(max-width: 600px)').matches) {
+      box.scrollLeft = (ui.choreCol || 0) * box.clientWidth;
+      box.addEventListener('scroll', () => {
+        const i = Math.round(box.scrollLeft / box.clientWidth);
+        if (i !== ui.choreCol) { ui.choreCol = i; $$('.chore-dots button').forEach((b, j) => b.classList.toggle('on', j === i)); }
+      }, { passive: true });
+    }
   }
   const choresFor = (mid, ds) => choresDue(mid, ds).map(x => x.c);
   function renderChoresWeek(ws) {
@@ -2832,6 +2848,7 @@
       const min = clamp(s * 60 + Math.floor((evt.clientY - rect.top) / HOUR_H * 2) * 30, 0, 23 * 60);
       eventModal(null, null, { date: el.dataset.date, startTime: fromMin(min), memberIds: el.dataset.member ? [el.dataset.member] : [] });
     },
+    'chore-col'(el) { const box = $('.chores'); ui.choreCol = Number(el.dataset.i); if (box) box.scrollTo({ left: ui.choreCol * box.clientWidth, behavior: 'smooth' }); },
     'chore-view'(el) { state.ui.choreView = el.dataset.v; save({ localOnly: true }); renderView(); },
     'chore-goto'(el) { ui.choreDate = parse(el.dataset.date); state.ui.choreView = 'day'; save({ localOnly: true }); renderView(); },
     'toggle-chore'(el) {
