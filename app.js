@@ -1253,10 +1253,129 @@
   }
 
   // ---------------------------------------------------------------- news (RSS headlines on the idle screen)
-  const NEWS_PRESETS = [
-    ['NPR News', 'https://feeds.npr.org/1001/rss.xml'], ['NPR World', 'https://feeds.npr.org/1004/rss.xml'],
-    ['BBC World', 'https://feeds.bbci.co.uk/news/world/rss.xml'], ['BBC US & Canada', 'https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml'],
-    ['The Guardian US', 'https://www.theguardian.com/us-news/rss'], ['CBS News', 'https://www.cbsnews.com/latest/rss/main'],
+  const NEWS_CATALOG = [
+    ["US news", "NPR News", "https://feeds.npr.org/1001/rss.xml"],
+    ["US news", "NPR Politics", "https://feeds.npr.org/1014/rss.xml"],
+    ["US news", "NBC News", "https://feeds.nbcnews.com/nbcnews/public/news"],
+    ["US news", "CBS News", "https://www.cbsnews.com/latest/rss/main"],
+    ["US news", "CBS News US", "https://www.cbsnews.com/latest/rss/us"],
+    ["US news", "ABC News", "https://abcnews.go.com/abcnews/topstories"],
+    ["US news", "ABC News US", "https://abcnews.go.com/abcnews/usheadlines"],
+    ["US news", "Fox News", "https://moxie.foxnews.com/google-publisher/latest.xml"],
+    ["US news", "Fox News US", "https://moxie.foxnews.com/google-publisher/us.xml"],
+    ["US news", "Fox News Politics", "https://moxie.foxnews.com/google-publisher/politics.xml"],
+    ["US news", "MS NOW", "https://www.ms.now/feed"],
+    ["US news", "PBS NewsHour", "https://www.pbs.org/newshour/feeds/rss/headlines"],
+    ["US news", "New York Times", "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml"],
+    ["US news", "New York Times US", "https://rss.nytimes.com/services/xml/rss/nyt/US.xml"],
+    ["US news", "New York Times Politics", "https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml"],
+    ["US news", "Washington Post Politics", "https://feeds.washingtonpost.com/rss/politics"],
+    ["US news", "Los Angeles Times", "https://www.latimes.com/world-nation/rss2.0.xml"],
+    ["US news", "New York Post", "https://nypost.com/feed/"],
+    ["US news", "Politico", "https://rss.politico.com/politics-news.xml"],
+    ["US news", "The Hill", "https://thehill.com/news/feed/"],
+    ["US news", "Axios", "https://api.axios.com/feed/"],
+    ["US news", "TIME", "https://time.com/feed/"],
+    ["US news", "The Atlantic", "https://www.theatlantic.com/feed/all/"],
+    ["US news", "Vox", "https://www.vox.com/rss/index.xml"],
+    ["US news", "Christian Science Monitor", "https://rss.csmonitor.com/feeds/all"],
+    ["US news", "National Review", "https://www.nationalreview.com/feed/"],
+    ["US news", "Washington Examiner", "https://www.washingtonexaminer.com/feed"],
+    ["US news", "The Daily Wire", "https://www.dailywire.com/feeds/rss.xml"],
+    ["US news", "Reason", "https://reason.com/feed/"],
+    ["US news", "Yahoo News", "https://news.yahoo.com/rss/"],
+    ["US news", "AP Top Stories (Flipboard)", "https://flipboard.com/@associatedpress/top-stories-u7govdf1z.rss"],
+    ["US news", "NPR National", "https://feeds.npr.org/1003/rss.xml"],
+    ["US news", "Washington Post US", "https://feeds.washingtonpost.com/rss/national"],
+    ["US news", "CBS News Politics", "https://www.cbsnews.com/latest/rss/politics"],
+    ["US news", "ABC News Politics", "https://abcnews.go.com/abcnews/politicsheadlines"],
+    ["World news", "BBC News", "https://feeds.bbci.co.uk/news/rss.xml"],
+    ["World news", "BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml"],
+    ["World news", "BBC US & Canada", "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml"],
+    ["World news", "NPR World", "https://feeds.npr.org/1004/rss.xml"],
+    ["World news", "New York Times World", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"],
+    ["World news", "CBS News World", "https://www.cbsnews.com/latest/rss/world"],
+    ["World news", "ABC News International", "https://abcnews.go.com/abcnews/internationalheadlines"],
+    ["World news", "Fox News World", "https://moxie.foxnews.com/google-publisher/world.xml"],
+    ["World news", "The Guardian US", "https://www.theguardian.com/us-news/rss"],
+    ["World news", "The Guardian World", "https://www.theguardian.com/world/rss"],
+    ["World news", "Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml"],
+    ["World news", "Deutsche Welle", "https://rss.dw.com/rdf/rss-en-all"],
+    ["World news", "France 24", "https://www.france24.com/en/rss"],
+    ["World news", "Sky News World", "https://feeds.skynews.com/feeds/rss/world.xml"],
+    ["World news", "CBC News", "https://www.cbc.ca/webfeed/rss/rss-topstories"],
+    ["World news", "ABC Australia", "https://www.abc.net.au/news/feed/45910/rss.xml"],
+    ["World news", "The Independent", "https://www.independent.co.uk/news/world/rss"],
+    ["World news", "Euronews", "https://www.euronews.com/rss"],
+    ["World news", "Times of Israel", "https://www.timesofisrael.com/feed/"],
+    ["World news", "Japan Times", "https://www.japantimes.co.jp/feed/"],
+    ["World news", "South China Morning Post", "https://www.scmp.com/rss/91/feed"],
+    ["World news", "Kyiv Independent", "https://kyivindependent.com/news-archive/rss/"],
+    ["World news", "Washington Post World", "https://feeds.washingtonpost.com/rss/world"],
+    ["Christian", "The Christian Post", "https://www.christianpost.com/rss/feed"],
+    ["Christian", "CBN News", "https://www1.cbn.com/rss-cbn-articles-cbnnews.xml"],
+    ["Christian", "Religion News Service", "https://religionnews.com/feed/"],
+    ["Christian", "Christian Headlines", "https://www.christianheadlines.com/rss/"],
+    ["Christian", "Christian News Network", "https://christiannews.net/feed/"],
+    ["Christian", "WORLD (wng.org)", "https://wng.org/feeds/rss/topics.rss"],
+    ["Christian", "The Gospel Coalition", "https://www.thegospelcoalition.org/feed/"],
+    ["Christian", "Relevant", "https://relevantmagazine.com/feed/"],
+    ["Christian", "Faithwire", "https://www.faithwire.com/feed/"],
+    ["Christian", "International Christian Concern", "https://www.persecution.org/feed/"],
+    ["Christian", "Bible Gateway Verse of the Day", "https://www.biblegateway.com/votd/get/?format=atom"],
+    ["Christian", "Christianity Today", "https://www.christianitytoday.com/feed/"],
+    ["Christian", "Christian Today", "https://www.christiantoday.com/rss/feed"],
+    ["Christian", "Mission Network News", "https://www.mnnonline.org/news/feed/"],
+    ["Christian", "Desiring God", "https://www.desiringgod.org/blog.rss"],
+    ["Christian", "Daily Citizen (Focus on the Family)", "https://dailycitizen.focusonthefamily.com/feed/"],
+    ["Christian", "Crosswalk", "https://www.crosswalk.com/rss/"],
+    ["Christian", "Christianity.com", "https://www.christianity.com/rss/"],
+    ["Christian", "Ligonier Ministries", "https://www.ligonier.org/feed"],
+    ["Christian", "Lifeway Research", "https://research.lifeway.com/feed/"],
+    ["Christian (Catholic)", "Catholic News Agency", "https://www.catholicnewsagency.com/rss/news.xml"],
+    ["Christian (Catholic)", "National Catholic Register", "https://www.ncregister.com/feeds/general-news.xml"],
+    ["Christian (Catholic)", "National Catholic Reporter", "https://www.ncronline.org/rss.xml"],
+    ["Christian (Catholic)", "Crux", "https://cruxnow.com/feed"],
+    ["Christian (Catholic)", "Vatican News", "https://www.vaticannews.va/en.rss.xml"],
+    ["Christian (Catholic)", "The Pillar", "https://www.pillarcatholic.com/feed"],
+    ["Christian (Catholic)", "Aleteia", "https://aleteia.org/feed/"],
+    ["Christian (Catholic)", "EWTN News", "https://www.ewtnnews.com/rss"],
+    ["Business", "NPR Business", "https://feeds.npr.org/1006/rss.xml"],
+    ["Business", "CNBC", "https://www.cnbc.com/id/100003114/device/rss/rss.html"],
+    ["Business", "MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"],
+    ["Business", "New York Times Business", "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"],
+    ["Business", "BBC Business", "https://feeds.bbci.co.uk/news/business/rss.xml"],
+    ["Tech", "The Verge", "https://www.theverge.com/rss/index.xml"],
+    ["Tech", "Ars Technica", "https://feeds.arstechnica.com/arstechnica/index"],
+    ["Tech", "TechCrunch", "https://techcrunch.com/feed/"],
+    ["Tech", "Wired", "https://www.wired.com/feed/rss"],
+    ["Tech", "Engadget", "https://www.engadget.com/rss.xml"],
+    ["Tech", "NPR Technology", "https://feeds.npr.org/1019/rss.xml"],
+    ["Tech", "BBC Technology", "https://feeds.bbci.co.uk/news/technology/rss.xml"],
+    ["Tech", "New York Times Technology", "https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml"],
+    ["Tech", "Hacker News", "https://hnrss.org/frontpage"],
+    ["Tech", "9to5Mac", "https://9to5mac.com/feed/"],
+    ["Tech", "Android Police", "https://www.androidpolice.com/feed/"],
+    ["Science & health", "NPR Health", "https://feeds.npr.org/1128/rss.xml"],
+    ["Science & health", "NPR Science", "https://feeds.npr.org/1007/rss.xml"],
+    ["Science & health", "New York Times Science", "https://rss.nytimes.com/services/xml/rss/nyt/Science.xml"],
+    ["Science & health", "New York Times Health", "https://rss.nytimes.com/services/xml/rss/nyt/Health.xml"],
+    ["Science & health", "BBC Science", "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml"],
+    ["Science & health", "NASA", "https://www.nasa.gov/news-release/feed/"],
+    ["Science & health", "ScienceDaily", "https://www.sciencedaily.com/rss/top/science.xml"],
+    ["Science & health", "Smithsonian", "https://www.smithsonianmag.com/rss/latest_articles/"],
+    ["Science & health", "Scientific American", "http://rss.sciam.com/ScientificAmerican-Global"],
+    ["Science & health", "Science News", "https://www.sciencenews.org/feed"],
+    ["Sports", "ESPN", "https://www.espn.com/espn/rss/news"],
+    ["Sports", "ESPN NFL", "https://www.espn.com/espn/rss/nfl/news"],
+    ["Sports", "ESPN NBA", "https://www.espn.com/espn/rss/nba/news"],
+    ["Sports", "ESPN MLB", "https://www.espn.com/espn/rss/mlb/news"],
+    ["Sports", "CBS Sports", "https://www.cbssports.com/rss/headlines/"],
+    ["Sports", "Yahoo Sports", "https://sports.yahoo.com/rss/"],
+    ["Arts & culture", "New York Times Arts", "https://rss.nytimes.com/services/xml/rss/nyt/Arts.xml"],
+    ["Good news", "Good News Network", "https://www.goodnewsnetwork.org/feed/"],
+    ["Good news", "Positive News", "https://www.positive.news/feed/"],
+    ["Good news", "Good News Network USA", "https://www.goodnewsnetwork.org/category/news/usa/feed/"],
   ];
   const news = { items: [], feeds: [], at: 0, idx: 0, timer: null, loading: null };
   try { const c = JSON.parse(localStorage.getItem('calendora.news') || 'null'); if (c && Array.isArray(c.items)) Object.assign(news, { items: c.items, at: c.at || 0 }); } catch (e) { /* none */ }
@@ -1301,17 +1420,48 @@
       ${state.settings.newsEnabled ? `
       <p class="muted small">Headlines rotate every 10 seconds, with the outlet's name. Tap one to read the full story on the outlet's site.</p>
       <div class="news-feeds">${fs.map(f => { const s = st[f.id]; return `<div class="news-feed"><div class="nf-main"><b>${esc(f.name || f.url)}</b><small class="${s && s.error ? 'warn-text' : 'muted'}">${s ? (s.error ? esc(s.error) : `${s.count} headlines`) : esc(f.url)}</small></div><button class="btn ghost small" data-action="news-remove" data-id="${f.id}">Remove</button></div>`; }).join('') || '<div class="empty-sm">No sources yet — add one below.</div>'}</div>
-      <div class="news-presets">${NEWS_PRESETS.filter(([, u]) => !fs.some(f => f.url === u)).map(([n, u]) => `<button class="hchip" data-action="news-add-preset" data-name="${esc(n)}" data-url="${esc(u)}">${icon('plus')} ${esc(n)}</button>`).join('')}</div>
-      <form class="row news-add" data-form="news-add"><input name="name" placeholder="Name (e.g. Local TV)" maxlength="40"><input name="url" placeholder="RSS feed link (https://…)" autocomplete="off"><button class="btn primary" type="submit">${icon('plus')} Add</button></form>
-      <p class="muted small">Most news sites publish an RSS feed — search the site for “RSS”. Local TV stations usually have one for local news.</p>` : ''}
+      <button class="btn primary news-browse" data-action="news-browse">${icon('plus')} Choose from ${NEWS_CATALOG.length} news sources</button>
+      <details class="news-custom"><summary>Add a source that isn’t listed</summary>
+        <form class="row news-add" data-form="news-add"><input name="name" placeholder="Name (e.g. Local TV)" maxlength="40"><input name="url" placeholder="RSS feed link (https://…)" autocomplete="off"><button class="btn" type="submit">${icon('plus')} Add</button></form>
+        <p class="muted small">Most news sites publish an RSS feed — search the site for “RSS”. Local TV stations usually have one for local news.</p>
+      </details>` : ''}
     </section>`;
   }
-  function newsAdd(name, url) {
+  function newsBrowse() {
+    const cats = [...new Set(NEWS_CATALOG.map(c => c[0]))];
+    const rows = () => cats.map(cat => `<div class="nb-cat" data-cat="${esc(cat)}"><h4>${esc(cat)}</h4>${NEWS_CATALOG.filter(c => c[0] === cat).map(([, n, u]) => `
+      <label class="nb-row" data-name="${esc(n.toLowerCase())}"><input type="checkbox" data-url="${esc(u)}" data-name="${esc(n)}" ${newsFeeds().some(f => f.url === u) ? 'checked' : ''}><span>${esc(n)}</span></label>`).join('')}</div>`).join('');
+    modal({
+      title: 'News sources',
+      body: `<p class="muted small">Pick up to 8. Changes save right away and are shared with the family.</p>
+        <input class="nb-search" name="q" placeholder="Search — e.g. Fox, BBC, Catholic, sports" autocomplete="off">
+        <div class="nb-count muted small"></div>
+        <div class="nb-list">${rows()}</div>`,
+      saveLabel: 'Done',
+      onOpen(form) {
+        const count = () => { $('.nb-count', form).textContent = `${newsFeeds().length} of 8 chosen`; };
+        count();
+        form.elements.q.addEventListener('input', () => {
+          const q = form.elements.q.value.trim().toLowerCase();
+          $$('.nb-cat', form).forEach(c => { let any = false; $$('.nb-row', c).forEach(r => { const hit = !q || r.dataset.name.includes(q) || c.dataset.cat.toLowerCase().includes(q); r.hidden = !hit; any = any || hit; }); c.hidden = !any; });
+        });
+        $$('.nb-row input', form).forEach(cb => cb.addEventListener('change', () => {
+          if (cb.checked) { if (newsAdd(cb.dataset.name, cb.dataset.url, true) === false) cb.checked = false; }
+          else { const f = newsFeeds().find(x => x.url === cb.dataset.url); if (f) { state.settings.newsFeeds = newsFeeds().filter(x => x !== f); save(); news.items = news.items.filter(x => x.feed !== f.id); } }
+          count(); renderView(); // the Settings page behind updates too
+        }));
+      },
+      onSave() { renderView(); loadNews(true).then(() => { if (state.ui.view === 'settings') renderView(); }); },
+    });
+  }
+  function newsAdd(name, url, quiet) {
     if (!/^https?:\/\/\S+\.\S+/i.test(url)) { toast('Paste a full feed link starting with https://'); return; }
     if (newsFeeds().some(f => f.url === url)) { toast('That source is already added'); return; }
-    if (newsFeeds().length >= 8) { toast('Up to 8 sources'); return; }
+    if (newsFeeds().length >= 8) { toast('Up to 8 sources at a time — remove one first'); return false; }
     state.settings.newsFeeds = [...newsFeeds(), { id: uid(), name: name || '', url }];
-    save(); renderView();
+    save();
+    if (quiet) { cloudPush(true).catch(() => {}); return true; }
+    renderView();
     cloudPush(true).catch(() => {}).then(() => loadNews(true)).then(() => { renderView(); const s = (news.feeds || []).find(f => f.url === url || f.id === state.settings.newsFeeds[state.settings.newsFeeds.length - 1].id); toast(s && s.error ? s.error : 'News source added'); });
   }
 
@@ -2803,7 +2953,7 @@
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
     'reload-app'() { location.reload(); },
-    'news-add-preset'(el) { newsAdd(el.dataset.name, el.dataset.url); },
+    'news-browse'() { newsBrowse(); },
     'news-remove'(el) { state.settings.newsFeeds = newsFeeds().filter(f => f.id !== el.dataset.id); save(); renderView(); news.items = news.items.filter(x => x.feed !== el.dataset.id); },
     'member-chores'(el) { const m = state.members.find(x => x.id === el.dataset.id); if (!m) return; m.noChores = !m.noChores; ui.choreCol = 0; save(); renderView(); toast(m.noChores ? `${m.name} is hidden from Chores` : `${m.name} is back in Chores`); },
     async 'install-app'() { if (!installPrompt) return; installPrompt.prompt(); const r = await installPrompt.userChoice.catch(() => null); installPrompt = null; if (r && r.outcome !== 'accepted') toast('You can install it any time from Settings'); renderView(); },
