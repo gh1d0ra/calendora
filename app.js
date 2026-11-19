@@ -1220,7 +1220,7 @@
     else if (/Silk\//.test(navigator.userAgent)) body = '<p>On a Fire tablet (Silk): tap the <b>⋮</b> menu at the top right, then <b>Add to Home screen</b>. If you don’t see it, add a bookmark and choose <b>Pin to Home</b>.</p>';
     else if (ios) body = '<p>On iPad or iPhone: open this page in <b>Safari</b>, tap the <b>Share</b> button, then <b>Add to Home Screen</b>.</p>';
     else body = '<p>On Android: open this page in <b>Chrome</b>, tap the <b>⋮</b> menu, then <b>Install app</b> (or <b>Add to Home screen</b>).</p>';
-    return `<section class="card"><h3>Install as an app</h3>${body}</section>`;
+    return `<section class="card"><h3>Install as an app</h3>${body}<div class="row"><button class="btn" data-action="reload-app">↻ Reload app</button><span class="muted small">Loads the newest version. Calendora also offers this by itself when an update is out.</span></div></section>`;
   }
 
   // ---------------------------------------------------------------- render: shell
@@ -2746,6 +2746,7 @@
     },
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
+    'reload-app'() { location.reload(); },
     async 'install-app'() { if (!installPrompt) return; installPrompt.prompt(); const r = await installPrompt.userChoice.catch(() => null); installPrompt = null; if (r && r.outcome !== 'accepted') toast('You can install it any time from Settings'); renderView(); },
     'h-who'(el) { hUI.who = el.dataset.id; renderView(); },
     'h-workout'(el) { workoutModal(hArr('workouts').find(w => w.id === el.dataset.id)); },
@@ -3756,6 +3757,27 @@
   // keep Google in step: every 5 minutes, and whenever the tab comes back into view
   setInterval(() => { if (gAccounts().some(gHasToken)) gSync({ quiet: true }); else renderSyncPill(); }, 5 * 60 * 1000);
   setInterval(renderSyncPill, 60 * 1000);
+  // Update check: when a new version is deployed, offer a one-tap reload (installed apps have no reload button).
+  let appTag = null, updateShown = false;
+  async function checkForUpdate() {
+    if (updateShown || location.protocol === 'file:') return;
+    try {
+      const r = await fetch('/app.js', { method: 'HEAD', cache: 'no-store' });
+      const tag = r.headers.get('ETag') || r.headers.get('Last-Modified') || r.headers.get('Content-Length');
+      if (!tag) return;
+      if (appTag === null) { appTag = tag; return; }
+      if (tag !== appTag) {
+        updateShown = true;
+        const b = document.createElement('button');
+        b.className = 'update-bar'; b.innerHTML = '✨ Calendora was updated — <b>tap to reload</b>';
+        b.addEventListener('click', () => location.reload());
+        document.body.appendChild(b);
+      }
+    } catch (e) { /* offline */ }
+  }
+  checkForUpdate();
+  setInterval(checkForUpdate, 5 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
   // Installable app: offline start-up plus the browser's "Install app" prompt.
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('/sw.js').catch(() => {});
   addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; if (state.ui.view === 'settings') renderView(); });
