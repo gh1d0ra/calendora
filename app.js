@@ -99,7 +99,7 @@
         weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, dinnerPresets: [], dinnerSeed: 0, amazonAlbums: [], framePhone: true,
         google: { clientId: '', connected: false, accounts: [], calendars: {}, defaultCal: '' },
       },
-      ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan' },
+      ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan', textSize: 0.85 },
     };
   }
 
@@ -287,6 +287,28 @@
     return true; // daily
   }
   const choreOn = (c, ds) => choreOnRaw(c, ds, parse(ds));
+  // Carry-over: a chore missed on its day shows on the following days (up to today) until it's done,
+  // unless "carry over" is switched off for it. Daily chores are already on every day, so they never pile up.
+  function choreCarriedFrom(c, ds) {
+    if (c.carry === false || choreOn(c, ds) || ds > todayStr()) return null;
+    const start = c.created || ds;
+    let d0 = null;
+    for (let i = 1; i <= 14; i++) { const x = ymd(addDays(parse(ds), -i)); if (x < start) break; if (choreOn(c, x)) { d0 = x; break; } }
+    if (!d0) return null;
+    for (let x = d0; x < ds; x = ymd(addDays(parse(x), 1))) if ((state.choreDone[x] || {})[c.id]) return null;
+    return d0;
+  }
+  // Chores for a person on a day: scheduled ones plus carried-over ones ({ c, from }).
+  function choresDue(mid, ds) {
+    const out = [];
+    state.chores.forEach(c => { if (c.memberId !== mid) return; if (choreOn(c, ds)) out.push({ c, from: null }); else { const f = choreCarriedFrom(c, ds); if (f) out.push({ c, from: f }); } });
+    return out;
+  }
+  function ensureChoreCreated() {
+    let changed = false;
+    state.chores.forEach(c => { if (!c.created) { c.created = todayStr(); changed = true; } });
+    if (changed) save();
+  }
   function earned(mid) {
     let n = 0;
     for (const day of Object.values(state.choreDone)) for (const v of Object.values(day)) if (v && v.m === mid) n += v.s || 0;
@@ -1279,7 +1301,13 @@
     } catch (e) { console.warn('Weather unavailable', e); }
   }
 
+  // Text size is per device (a wall tablet and a phone want different sizes). Scales the page content, not dialogs.
+  function applyTextSize() {
+    const z = Number(state.ui.textSize) || 1;
+    ['.topbar', '#toolbar', '#view'].forEach(sel => { const el = $(sel); if (el) el.style.zoom = z === 1 ? '' : String(z); });
+  }
   function render() {
+    applyTextSize();
     dayCache = new Map();
     renderSidebar();
     renderClock();
@@ -1543,6 +1571,7 @@
         </div></div>`;
     }
     $('#view').innerHTML = `<div class="schedule card">${h || '<div class="empty">No upcoming events.</div>'}</div>`;
+    const td = $('.sday.today'); if (td && td.offsetTop > 40) td.scrollIntoView({ block: 'start' });
   }
 
   // ---------------------------------------------------------------- chores
@@ -1576,21 +1605,22 @@
       <span class="spacer"></span>
       <button class="btn primary" data-action="new-chore">${icon('plus')} Add chore</button>`;
     if (!state.members.length) { $('#view').innerHTML = emptyMembers(); return; }
+    ensureChoreCreated();
     if (cv === 'week') return renderChoresWeek(ws);
     if (cv === 'month') return renderChoresMonth(d);
     const done = state.choreDone[ds] || {};
     if (!state.members.length) { $('#view').innerHTML = emptyMembers(); return; }
     $('#view').innerHTML = `<div class="chores">${state.members.map(m => {
-      const list = state.chores.filter(c => c.memberId === m.id && choreOn(c, ds));
+      const due = choresDue(m.id, ds), list = due.map(x => x.c), fromOf = Object.fromEntries(due.map(x => [x.c.id, x.from]));
       const n = list.filter(c => done[c.id]).length;
       const pct = list.length ? n / list.length : 0;
       const groups = TIMES_OF_DAY.map(([k, label, ic]) => {
         const items = list.filter(c => (c.time || 'anytime') === k);
         if (!items.length) return '';
         return `<div class="ctod">${ic} ${label}</div>` + items.map(c => `
-          <div class="chore ${done[c.id] ? 'done' : ''}" data-action="toggle-chore" data-id="${c.id}">
+          <div class="chore ${done[c.id] ? 'done' : ''} ${fromOf[c.id] ? 'carried' : ''}" data-action="toggle-chore" data-id="${c.id}">
             <span class="cemoji">${esc(c.emoji || '⭐')}</span>
-            <span class="ctext"><span class="ctitle">${esc(c.title)}</span><span class="cstars">${'★'.repeat(Math.min(c.stars || 0, 5))}</span></span>
+            <span class="ctext"><span class="ctitle">${esc(c.title)}</span><span class="cstars">${'★'.repeat(Math.min(c.stars || 0, 5))}${fromOf[c.id] ? `<span class="carry-tag">↪ from ${DOW[parse(fromOf[c.id]).getDay()]}</span>` : ''}</span></span>
             <button class="mini-btn" data-action="edit-chore" data-id="${c.id}" aria-label="Edit chore">${icon('edit')}</button>
             <span class="check"><svg viewBox="0 0 24 24"><path d="M6 12.5l4 4 8-9"/></svg></span>
           </div>`).join('');
@@ -1606,7 +1636,7 @@
       </div>`;
     }).join('')}</div>`;
   }
-  const choresFor = (mid, ds) => state.chores.filter(c => c.memberId === mid && choreOn(c, ds));
+  const choresFor = (mid, ds) => choresDue(mid, ds).map(x => x.c);
   function renderChoresWeek(ws) {
     const days = [...Array(7)].map((_, i) => addDays(ws, i)), tds = todayStr();
     $('#view').innerHTML = `<div class="cweek" style="grid-template-columns: 170px repeat(7, minmax(120px, 1fr))">
@@ -2132,6 +2162,7 @@
       </section>
       <section class="card">
         <h3>Display</h3>
+        <label class="field inline"><span>Text size on this device</span><select data-ui-setting="textSize">${[[0.7, 'Smallest (70%)'], [0.78, 'Smaller (78%)'], [0.85, 'Small (85%)'], [0.92, 'Medium (92%)'], [1, 'Normal (100%)'], [1.12, 'Large (112%)']].map(([v, l]) => opt(v, l, state.ui.textSize || 1)).join('')}</select></label>
         <label class="field inline"><span>Week starts on</span><select data-setting="weekStart" data-num="1">${opt(0, 'Sunday', s.weekStart)}${opt(1, 'Monday', s.weekStart)}${opt(6, 'Saturday', s.weekStart)}</select></label>
         <label class="field inline"><span>Clock</span><select data-setting="use24h" data-bool="1">${opt('false', '12-hour (3:30 PM)', s.use24h)}${opt('true', '24-hour (15:30)', s.use24h)}</select></label>
         <label class="field inline"><span>Day view hours</span>
@@ -2431,7 +2462,7 @@
 
   function choreModal(c, preset = {}) {
     const isNew = !c;
-    const ch = c ? { ...c } : { id: uid(), title: '', emoji: '🧹', memberId: preset.memberId || (state.members[0] && state.members[0].id), time: 'anytime', stars: 1, repeat: 'daily', days: [], date: ymd(ui.choreDate) };
+    const ch = c ? { ...c } : { id: uid(), title: '', emoji: '🧹', memberId: preset.memberId || (state.members[0] && state.members[0].id), time: 'anytime', stars: 1, repeat: 'daily', days: [], date: ymd(ui.choreDate), carry: true, created: todayStr() };
     modal({
       title: isNew ? 'New chore' : 'Edit chore',
       body: `
@@ -2442,7 +2473,8 @@
         <div class="field"><span>Repeat</span><div class="seg wide">${[['daily', 'Every day'], ['weekly', 'Certain days'], ['once', 'Just once']].map(([k, l]) => `<label><input type="radio" name="repeat" value="${k}" ${ch.repeat === k ? 'checked' : ''}><span>${l}</span></label>`).join('')}</div></div>
         <div class="field only-weekly">${dayPicker(ch.days && ch.days.length ? ch.days : [1, 2, 3, 4, 5], 'days')}</div>
         <label class="field only-once"><span>On</span><input type="date" name="date" value="${ch.date || ymd(ui.choreDate)}"></label>
-        <div class="field"><span>Stars earned</span><div class="star-pick">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="stars" value="${n}" ${ch.stars === n ? 'checked' : ''}><span>${'★'.repeat(n)}</span></label>`).join('')}</div></div>`,
+        <div class="field"><span>Stars earned</span><div class="star-pick">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="stars" value="${n}" ${ch.stars === n ? 'checked' : ''}><span>${'★'.repeat(n)}</span></label>`).join('')}</div></div>
+        <label class="check-row"><input type="checkbox" name="carry" ${ch.carry !== false ? 'checked' : ''}><span>Carry over to the next day if it isn’t done<br><small class="muted">Daily chores are already on every day, so this matters for “Certain days” and “Just once”.</small></span></label>`,
       onOpen(form) {
         const sync = () => { const r = fall(form, 'repeat')[0]; form.classList.toggle('is-weekly', r === 'weekly'); form.classList.toggle('is-once', r === 'once'); };
         form.addEventListener('change', sync); sync();
@@ -2452,7 +2484,7 @@
         if (!title) { form.elements.title.classList.add('invalid'); return false; }
         const memberId = fall(form, 'memberId')[0];
         if (!memberId) { toast('Pick who this chore is for'); return false; }
-        const out = { ...ch, title, memberId, emoji: fall(form, 'emoji')[0] || '⭐', time: fall(form, 'time')[0] || 'anytime', repeat: fall(form, 'repeat')[0] || 'daily', days: fall(form, 'days').map(Number), date: fval(form, 'date') || null, stars: Number(fall(form, 'stars')[0] || 1) };
+        const out = { ...ch, title, memberId, emoji: fall(form, 'emoji')[0] || '⭐', time: fall(form, 'time')[0] || 'anytime', repeat: fall(form, 'repeat')[0] || 'daily', days: fall(form, 'days').map(Number), date: fval(form, 'date') || null, stars: Number(fall(form, 'stars')[0] || 1), carry: form.elements.carry.checked, created: ch.created || todayStr() };
         if (out.repeat === 'weekly' && !out.days.length) { toast('Pick at least one day'); return false; }
         if (isNew) state.chores.push(out); else state.chores = state.chores.map(x => x.id === out.id ? out : x);
         save(); renderView(); toast(isNew ? 'Chore added' : 'Chore updated');
@@ -2972,6 +3004,7 @@
       const f = icalFeed(t.dataset.icalMember); if (!f) return;
       f.memberId = t.value; icalRemap(); save(); toast(`${f.name} → ${t.value ? memberById(t.value).name : 'Everyone'}`); return;
     }
+    if (t.matches('[data-ui-setting]')) { state.ui[t.dataset.uiSetting] = Number(t.value); save({ localOnly: true }); render(); return; }
     if (t.matches('[data-setting-lines]')) { state.settings[t.dataset.settingLines] = [...new Set(t.value.split('\n').map(x => x.trim()).filter(Boolean))]; save(); toast('Saved'); return; }
     if (t.matches('[data-setting-bool]')) { state.settings[t.dataset.settingBool] = t.checked; save(); render(); if (t.dataset.settingBool === 'babyEnabled' && t.checked) toast('Baby is now in the menu'); return; }
     const el = t.closest('[data-setting]'); if (!el) return;
