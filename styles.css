@@ -816,3 +816,11 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
 /* the next event on the idle screen */
 .ss-ev.next { background: #D93A3A; border-left-color: #fff; box-shadow: 0 6px 22px rgba(217, 58, 58, .45); }
 .ss-ev.next em { margin-left: auto; flex: none; font-style: normal; font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .06em; background: #fff; color: #C62828; padding: 2px 9px; border-radius: 999px; }
+/* three headlines, original large size, picture on the right */
+.ss-left { width: min(640px, 54vw); }
+.ssn-item { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-radius: 16px; }
+.ssn-text { flex: 1; min-width: 0; }
+.ssn-item .ssn-title { font-size: 26px; line-height: 1.22; -webkit-line-clamp: 3; }
+.ssn-item .ssn-src { font-size: 14px; margin-top: 5px; }
+.ssn-img { flex: none; width: 112px; height: 84px; object-fit: cover; border-radius: 10px; background: rgba(255, 255, 255, .12); }
+@media (max-width: 700px) { .ss-left { width: auto; } .ssn-item .ssn-title { font-size: 19px; } .ssn-img { width: 76px; height: 60px; } }

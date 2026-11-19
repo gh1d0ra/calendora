@@ -461,6 +461,19 @@ function xmlText(s) {
     .replace(/\s+/g, ' ').trim();
 }
 const xmlTag = (block, tag) => { const m = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'i').exec(block); return m ? m[1] : ''; };
+// The article's picture, when the feed provides one (media:thumbnail / media:content / image enclosure / first <img>)
+function feedImage(b) {
+  const pick = re => { const m = re.exec(b); return m ? m[1].replace(/&amp;/g, '&') : ''; };
+  const cands = [
+    pick(/<media:thumbnail\b[^>]*?url=["']([^"']+)["']/i),
+    pick(/<media:content\b(?=[^>]*(?:medium=["']image["']|type=["']image\/))[^>]*?url=["']([^"']+)["']/i),
+    pick(/<media:content\b[^>]*?url=["']([^"']+\.(?:jpe?g|png|webp)(?:\?[^"']*)?)["']/i),
+    pick(/<enclosure\b(?=[^>]*type=["']image\/)[^>]*?url=["']([^"']+)["']/i),
+    pick(/<img\b[^>]*?src=["']([^"']+)["']/i) || pick(/&lt;img\b[^&]*?src=(?:&quot;|["'])([^"'&]+)/i),
+  ];
+  const u = cands.find(x => /^https:\/\//i.test(x)) || '';
+  return u.length < 600 ? u : '';
+}
 function parseFeed(xml) {
   const feedTitle = xmlText(xmlTag(xml.replace(/<(item|entry)[\s>][\s\S]*$/i, ''), 'title'));
   const blocks = xml.match(/<item[\s>][\s\S]*?<\/item>/gi) || xml.match(/<entry[\s>][\s\S]*?<\/entry>/gi) || [];
@@ -471,7 +484,7 @@ function parseFeed(xml) {
     if (!/^https?:\/\//i.test(link)) { const g = xmlText(xmlTag(b, 'guid')); if (/^https?:\/\//i.test(g)) link = g; }
     const when = xmlText(xmlTag(b, 'pubDate') || xmlTag(b, 'published') || xmlTag(b, 'updated') || xmlTag(b, 'dc:date'));
     const t = Date.parse(when);
-    return { title: title.slice(0, 220), link: /^https?:\/\//i.test(link) ? link : '', time: Number.isFinite(t) ? t : 0, feedTitle };
+    return { title: title.slice(0, 220), link: /^https?:\/\//i.test(link) ? link : '', time: Number.isFinite(t) ? t : 0, feedTitle, image: feedImage(b) };
   }).filter(x => x.title);
 }
 async function readFeed(url, ctx) {

@@ -1396,13 +1396,13 @@
     const box = $('#ssNews');
     if (!box) return;
     if (!state.settings.newsEnabled || !news.items.length) { box.hidden = true; return; }
-    // four headlines at a time, stacked; the next four come in every rotation
-    const n = Math.min(4, news.items.length);
+    // three headlines at a time, stacked, with the article's picture when the feed has one
+    const n = Math.min(3, news.items.length);
     news.idx = news.idx % news.items.length;
     const four = Array.from({ length: n }, (_, k) => news.items[(news.idx + k) % news.items.length]);
     box.hidden = false;
     box.classList.remove('in'); void box.offsetWidth;
-    box.innerHTML = `<div class="ss-ev-head">📰 News</div>${four.map(it => `<div class="ssn-item" data-link="${esc(it.link || '')}"><div class="ssn-title">${esc(it.title)}</div><div class="ssn-src">${esc(it.source || '')}${it.time ? ` · ${timeAgo(it.time)}` : ''}</div></div>`).join('')}`;
+    box.innerHTML = `<div class="ss-ev-head">📰 News</div>${four.map(it => `<div class="ssn-item ${it.image ? 'has-img' : ''}" data-link="${esc(it.link || '')}"><div class="ssn-text"><div class="ssn-title">${esc(it.title)}</div><div class="ssn-src">${esc(it.source || '')}${it.time ? ` · ${timeAgo(it.time)}` : ''}</div></div>${it.image ? `<img class="ssn-img" src="${esc(it.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}</div>`).join('')}`;
     box.classList.add('in');
   }
   function startNews() {
@@ -1411,7 +1411,7 @@
     news.idx = Math.floor(Math.random() * Math.max(1, news.items.length));
     showHeadline();
     loadNews().then(showHeadline);
-    news.timer = setInterval(() => { news.idx += 4; showHeadline(); if (Date.now() - news.at > 15 * 60000) loadNews(); }, 15000);
+    news.timer = setInterval(() => { news.idx += 3; showHeadline(); if (Date.now() - news.at > 15 * 60000) loadNews(); }, 15000);
   }
   function newsSection() {
     const fs = newsFeeds(), st = Object.fromEntries((news.feeds || []).map(f => [f.id, f]));
@@ -1419,7 +1419,7 @@
       <h3>News on the idle screen</h3>
       <label class="switch"><input type="checkbox" data-setting-bool="newsEnabled" ${state.settings.newsEnabled ? 'checked' : ''}><span class="track"></span><span>Show headlines on the idle screen</span></label>
       ${state.settings.newsEnabled ? `
-      <p class="muted small">Four headlines show at a time, changing every 15 seconds, with each outlet's name. Tap one to read the full story on the outlet's site.</p>
+      <p class="muted small">Three headlines show at a time, with the article's picture when the source provides one, changing every 15 seconds, with each outlet's name. Tap one to read the full story on the outlet's site.</p>
       <div class="news-feeds">${fs.map(f => { const s = st[f.id]; return `<div class="news-feed"><div class="nf-main"><b>${esc(f.name || f.url)}</b><small class="${s && s.error ? 'warn-text' : 'muted'}">${s ? (s.error ? esc(s.error) : `${s.count} headlines`) : esc(f.url)}</small></div><button class="btn ghost small" data-action="news-remove" data-id="${f.id}">Remove</button></div>`; }).join('') || '<div class="empty-sm">No sources yet — add one below.</div>'}</div>
       <button class="btn primary news-browse" data-action="news-browse">${icon('plus')} Choose from ${NEWS_CATALOG.length} news sources</button>
       <details class="news-custom"><summary>Add a source that isn’t listed</summary>
