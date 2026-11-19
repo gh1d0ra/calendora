@@ -13,7 +13,36 @@
   const MEAL_TYPES = [['breakfast', 'Breakfast', '🥞'], ['lunch', 'Lunch', '🥪'], ['dinner', 'Dinner', '🍝'], ['snack', 'Snack', '🍎']];
   const TIMES_OF_DAY = [['morning', 'Morning', '🌅'], ['afternoon', 'Afternoon', '☀️'], ['evening', 'Evening', '🌙'], ['anytime', 'Anytime', '✨']];
   const REPEAT_OPTS = [['none', 'Does not repeat'], ['daily', 'Every day'], ['weekdays', 'Every weekday (Mon–Fri)'], ['weekly', 'Weekly on…'], ['biweekly', 'Every 2 weeks'], ['monthly', 'Monthly'], ['yearly', 'Yearly']];
-  const CHORE_EMOJI = ['🛏️', '🪥', '🎒', '🧸', '🐱', '🐕', '🪴', '🍽️', '🗑️', '🧺', '📚', '🎹', '🧹', '🚿', '👕', '🥗', '🚗', '💪'];
+  const CHORE_EMOJI = [
+    // home & tidy
+    '🛏️', '🧸', '🧹', '🧽', '🧼', '🪣', '🗑️', '♻️', '🧺', '👕', '🧦', '👟', '🪟', '🛋️', '🚪', '📦',
+    // kitchen & food
+    '🍽️', '🍳', '🍝', '🥗', '🥦', '🥪', '🥘', '🍎', '💧', '🥛', '🧃',
+    // errands & planning
+    '🛒', '📝', '🧾', '🎁', '🦃', '🎄', '📸', '🖼️', '📅', '✉️', '💳',
+    // fix, paint & yard
+    '🎨', '🖌️', '🔧', '🧰', '🪜', '🌿', '🪴', '🌱', '🍂', '❄️', '🚗',
+    // school & practice
+    '🎒', '📚', '📖', '✏️', '💻', '🧮', '🎹', '🎻', '⚽', '🏃', '💪',
+    // self-care & pets
+    '🪥', '🚿', '🛁', '💇', '💊', '😴', '🐱', '🐕', '🐠', '🐹', '🐾',
+  ];
+  // Picks an icon from the chore's wording (used until someone picks one by hand)
+  const CHORE_ICON_WORDS = [
+    [/\b(paint|trim|baseboard|wall)/i, '🎨'], [/\b(fix|repair|tighten|screw)/i, '🔧'], [/\b(ladder|gutter|attic)/i, '🪜'],
+    [/\b(pasta|spaghetti|noodle)/i, '🍝'], [/\b(broccoli|veggie|vegetable)/i, '🥦'], [/\b(salad)/i, '🥗'], [/\b(cook|make (dinner|lunch|breakfast)|bake)/i, '🍳'],
+    [/\b(lunch ?bag|lunch ?box|sandwich|lunch)/i, '🥪'], [/\b(water|drink)/i, '💧'], [/\b(dish|dishwasher|table)/i, '🍽️'],
+    [/\b(eucalyptus|greener|flower|plant|water the)/i, '🌿'], [/\b(costco|shopping|store|groceries|buy)\b/i, '🛒'], [/\b(list|plan|schedule)/i, '📝'], [/\b(thanksgiving|turkey)/i, '🦃'], [/\b(christmas|tree|ornament)/i, '🎄'],
+    [/\b(photo|picture|album)/i, '🖼️'], [/\b(gift|present|wrap)/i, '🎁'], [/\b(mail|letter|card)/i, '✉️'], [/\b(bill|pay)/i, '💳'],
+    [/\b(leaves|rake)/i, '🍂'], [/\b(snow|shovel)/i, '❄️'], [/\b(garden|weed|mow|lawn)/i, '🌱'],
+    [/\b(toy)/i, '🧸'], [/\b(bed)\b/i, '🛏️'], [/\b(sweep|vacuum|clean)/i, '🧹'], [/\b(wipe|scrub|mop)/i, '🧽'], [/\b(trash|garbage)/i, '🗑️'], [/\b(recycl)/i, '♻️'],
+    [/\b(laundry|wash clothes|fold)/i, '🧺'], [/\b(sock)/i, '🧦'], [/\b(shoe)/i, '👟'], [/\b(clothes|dress|outfit)/i, '👕'], [/\b(window)/i, '🪟'], [/\b(box|package|upstairs|downstairs|put away)/i, '📦'],
+    [/\b(i-?ready|computer|laptop|ipad|online)/i, '💻'], [/\b(math)/i, '🧮'], [/\b(homework|worksheet|write|paper)/i, '✏️'], [/\b(read|book)/i, '📖'], [/\b(backpack|school bag)/i, '🎒'],
+    [/\b(piano)/i, '🎹'], [/\b(violin|guitar|instrument)/i, '🎻'], [/\b(soccer|ball|practice)/i, '⚽'], [/\b(run|walk|exercise)/i, '🏃'], [/\b(workout|gym)/i, '💪'],
+    [/\b(teeth|brush)/i, '🪥'], [/\b(shower)/i, '🚿'], [/\b(bath)/i, '🛁'], [/\b(hair)/i, '💇'], [/\b(vitamin|medicine|pill)/i, '💊'], [/\b(sleep|nap)/i, '😴'],
+    [/\b(cat|litter)/i, '🐱'], [/\b(dog|walk the)/i, '🐕'], [/\b(fish|tank)/i, '🐠'], [/\b(hamster|guinea)/i, '🐹'], [/\b(pet|feed)/i, '🐾'], [/\b(car)\b/i, '🚗'],
+  ];
+  const choreIconFor = title => { for (const [re, e] of CHORE_ICON_WORDS) if (re.test(title || '')) return e; return ''; };
   const REWARD_EMOJI = ['🎬', '🍦', '📱', '🌙', '📖', '🎡', '🍕', '🎮', '🛝', '🎨', '🧁', '⚽'];
   const LIST_EMOJI = ['🛒', '✅', '🧳', '🎁', '🏠', '📦', '🎉', '💊', '📝', '🐾'];
   const SCENES = [
@@ -2432,6 +2461,14 @@
       onOpen(form) {
         const sync = () => { const r = fall(form, 'repeat')[0]; form.classList.toggle('is-weekly', r === 'weekly'); form.classList.toggle('is-once', r === 'once'); };
         form.addEventListener('change', sync); sync();
+        // suggest an icon from the wording until one is picked by hand
+        let picked = !!c;
+        $$('input[name="emoji"]', form).forEach(r => r.addEventListener('change', () => { picked = true; }));
+        form.elements.title.addEventListener('input', () => {
+          if (picked) return;
+          const e = choreIconFor(form.elements.title.value), r = e && $(`input[name="emoji"][value="${e}"]`, form);
+          if (r) { r.checked = true; r.closest('label').scrollIntoView({ block: 'nearest' }); }
+        });
       },
       onSave(form) {
         const title = fval(form, 'title');
