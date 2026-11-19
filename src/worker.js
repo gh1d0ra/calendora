@@ -711,6 +711,16 @@ async function handleApi(request, env, url, ctx) {
 
   // News headlines for the idle screen, from the RSS/Atom feeds saved in family settings.
   // Only headline, link, time and outlet name are passed on — no article text.
+  // Test feed links (used when adding a source, and to check the built-in catalog)
+  if (path === '/api/news/check' && method === 'POST') {
+    const body = await readJson(request);
+    const urls = (body && Array.isArray(body.urls) ? body.urls : []).filter(u => /^https?:\/\//i.test(u)).slice(0, 25);
+    const out = await Promise.all(urls.map(async u => {
+      try { const items = await readFeed(u, ctx); const newest = Math.max(0, ...items.map(i => i.time || 0)); return { url: u, ok: items.length > 0, count: items.length, newest, title: (items[0] && items[0].feedTitle) || '' }; }
+      catch (e) { return { url: u, ok: false, count: 0, error: e.message }; }
+    }));
+    return json({ results: out });
+  }
   if (path === '/api/news' && method === 'GET') {
     const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(BOARD_ID).first();
     let feeds = [];
