@@ -824,3 +824,16 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
 .ssn-item .ssn-src { font-size: 14px; margin-top: 5px; }
 .ssn-img { flex: none; width: 112px; height: 84px; object-fit: cover; border-radius: 10px; background: rgba(255, 255, 255, .12); }
 @media (max-width: 700px) { .ss-left { width: auto; } .ssn-item .ssn-title { font-size: 19px; } .ssn-img { width: 76px; height: 60px; } }
+/* news back across the top of the idle screen: three cards side by side on wide screens, stacked on narrow ones */
+.ss-news { position: absolute; top: 60px; left: 48px; right: 48px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
+.ss-news > .ss-ev-head { grid-column: 1 / -1; }
+.ss-news .ssn-item { align-items: flex-start; }
+.ss-news .ssn-item.has-img { flex-direction: column-reverse; align-items: stretch; }
+.ss-news .ssn-item.has-img .ssn-img { width: 100%; height: 150px; }
+.ss-left { width: min(560px, 50vw); }
+@media (max-width: 1000px) {
+  .ss-news { grid-template-columns: 1fr; }
+  .ss-news .ssn-item.has-img { flex-direction: row; align-items: center; }
+  .ss-news .ssn-item.has-img .ssn-img { width: 112px; height: 84px; }
+}
+@media (max-width: 700px) { .ss-news { top: 52px; left: 18px; right: 18px; } .ss-news .ssn-item.has-img .ssn-img { width: 76px; height: 60px; } }

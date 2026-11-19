@@ -1254,6 +1254,14 @@
 
   // ---------------------------------------------------------------- news (RSS headlines on the idle screen)
   const NEWS_CATALOG = [
+    ["Daily verse & devotionals", "Verse of the Day — Bible Gateway (NIV)", "https://www.biblegateway.com/votd/get/?format=atom"],
+    ["Daily verse & devotionals", "Verse of the Day — Bible Gateway (KJV)", "https://www.biblegateway.com/votd/get/?format=atom&version=KJV"],
+    ["Daily verse & devotionals", "Verse of the Day — Bible Gateway (ESV)", "https://www.biblegateway.com/votd/get/?format=atom&version=ESV"],
+    ["Daily verse & devotionals", "Verse of the Day — Bible Gateway (NKJV)", "https://www.biblegateway.com/votd/get/?format=atom&version=NKJV"],
+    ["Daily verse & devotionals", "Verse of the Day — Bible Gateway (NLT)", "https://www.biblegateway.com/votd/get/?format=atom&version=NLT"],
+    ["Daily verse & devotionals", "VerseoftheDay.com", "https://www.heartlight.org/rss/devos/votd/en/"],
+    ["Daily verse & devotionals", "Our Daily Bread", "https://api.experience.odb.org/devotionals/feed/?country=US"],
+    ["Daily verse & devotionals", "iBelieve Devotionals", "https://www.ibelieve.com/devotionals/rss/"],
     ["US news", "NPR News", "https://feeds.npr.org/1001/rss.xml"],
     ["US news", "NPR Politics", "https://feeds.npr.org/1014/rss.xml"],
     ["US news", "NBC News", "https://feeds.nbcnews.com/nbcnews/public/news"],
@@ -1322,7 +1330,6 @@
     ["Christian", "Relevant", "https://relevantmagazine.com/feed/"],
     ["Christian", "Faithwire", "https://www.faithwire.com/feed/"],
     ["Christian", "International Christian Concern", "https://www.persecution.org/feed/"],
-    ["Christian", "Bible Gateway Verse of the Day", "https://www.biblegateway.com/votd/get/?format=atom"],
     ["Christian", "Christianity Today", "https://www.christianitytoday.com/feed/"],
     ["Christian", "Christian Today", "https://www.christiantoday.com/rss/feed"],
     ["Christian", "Mission Network News", "https://www.mnnonline.org/news/feed/"],
@@ -3863,7 +3870,8 @@
     ssSlides = SCENES; // the idle screen shows color scenes with the clock and today's events
     ssIdx = Math.floor(Math.random() * ssSlides.length);
     ss.innerHTML = `<div class="ss-slide" id="ssA"></div><div class="ss-slide" id="ssB"></div><div class="ss-shade"></div>
-      <div class="ss-left"><div class="ss-news" id="ssNews" hidden></div><div class="ss-events" id="ssEvents"></div>
+      <div class="ss-news" id="ssNews" hidden></div>
+      <div class="ss-left"><div class="ss-events" id="ssEvents"></div>
         <div class="ss-info"><div class="ss-time" id="ssTime"></div><div class="ss-date" id="ssDate"></div><div class="ss-weather" id="ssWeather"></div></div></div>
       <div class="ss-hint">Tap anywhere to return</div>`;
     ss.hidden = false;
