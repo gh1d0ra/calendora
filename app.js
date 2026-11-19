@@ -3862,8 +3862,9 @@
     ssSlides = SCENES; // the idle screen shows color scenes with the clock and today's events
     ssIdx = Math.floor(Math.random() * ssSlides.length);
     ss.innerHTML = `<div class="ss-slide" id="ssA"></div><div class="ss-slide" id="ssB"></div><div class="ss-shade"></div>
-      <div class="ss-info"><div class="ss-time" id="ssTime"></div><div class="ss-date" id="ssDate"></div><div class="ss-weather" id="ssWeather"></div></div>
-      <div class="ss-events" id="ssEvents"></div><div class="ss-news" id="ssNews" hidden></div><div class="ss-hint">Tap anywhere to return</div>`;
+      <div class="ss-left"><div class="ss-events" id="ssEvents"></div>
+        <div class="ss-info"><div class="ss-time" id="ssTime"></div><div class="ss-date" id="ssDate"></div><div class="ss-weather" id="ssWeather"></div></div></div>
+      <div class="ss-news" id="ssNews" hidden></div><div class="ss-hint">Tap anywhere to return</div>`;
     ss.hidden = false;
     requestAnimationFrame(() => ss.classList.add('on'));
     showSlide();
@@ -3881,6 +3882,7 @@
     const next = ssSlides[(ssIdx + 1) % ssSlides.length], m = /url\('([^']+)'\)/.exec(next || '');
     if (m) { const im = new Image(); im.src = m[1]; } // warm the next photo so it doesn't pop in
   }
+  const today_ = () => today();
   function updateScreensaver() {
     if (!ssOn) return;
     const n = new Date();
@@ -3890,8 +3892,12 @@
     $('#ssWeather').textContent = w && w.current ? `${wIcon(w.current.weather_code, w.current.is_day)} ${Math.round(w.current.temperature_2m)}°` : '';
     const nowMin = n.getHours() * 60 + n.getMinutes();
     dayCache = new Map();
-    const up = eventsOn(todayStr()).filter(e => e.allDay || toMin(e.endTime || e.startTime) >= nowMin).slice(0, 4);
-    $('#ssEvents').innerHTML = up.length ? `<div class="ss-ev-head">Today</div>${up.map(e => `<div class="ss-ev" style="--c:${evColor(e)}"><b>${e.allDay ? 'All day' : fmtTime(e.startTime)}</b>${esc(e.title)}</div>`).join('')}` : '';
+    // today's remaining events, then tomorrow's, stacked above the clock
+    const today = eventsOn(todayStr()).filter(e => e.allDay || toMin(e.endTime || e.startTime) >= nowMin);
+    const tmr = eventsOn(ymd(addDays(today_(), 1)));
+    const max = matchMedia('(max-width: 700px)').matches ? 3 : 5;
+    const block = (label, list, empty) => `<div class="ss-ev-group"><div class="ss-ev-head">${label}</div>${list.length ? list.slice(0, max).map(e => `<div class="ss-ev" style="--c:${evColor(e)}"><b>${e.allDay ? 'All day' : fmtTime(e.startTime)}</b><span>${esc(e.title)}</span></div>`).join('') + (list.length > max ? `<div class="ss-ev-more">+${list.length - max} more</div>` : '') : `<div class="ss-ev-none">${empty}</div>`}</div>`;
+    $('#ssEvents').innerHTML = block('Today', today, 'Nothing else today') + block(`Tomorrow · ${DOW_LONG[addDays(today_(), 1).getDay()]}`, tmr, 'Nothing planned');
   }
   function stopScreensaver() {
     if (!ssOn) return;

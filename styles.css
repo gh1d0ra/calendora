@@ -392,12 +392,12 @@ form:not(.is-allday) .only-timed, form.is-allday .only-allday, form.is-repeat .o
 .ss-slide.kb { animation: kenburns 14s ease-out forwards; }
 @keyframes kenburns { from { transform: scale(1) translate(0, 0); } to { transform: scale(1.08) translate(-1.5%, -1%); } }
 .ss-shade { position: absolute; inset: 0; background: linear-gradient(to top, rgba(0, 0, 0, .55), transparent 45%), linear-gradient(to bottom, rgba(0, 0, 0, .25), transparent 30%); }
-.ss-info { position: absolute; left: 48px; bottom: 44px; text-shadow: 0 2px 20px rgba(0, 0, 0, .35); }
+.ss-info { text-shadow: 0 2px 20px rgba(0, 0, 0, .35); }
 .ss-time { font-size: 112px; font-weight: 900; letter-spacing: -.04em; line-height: .95; }
 .ss-time small { font-size: 36px; margin-left: 8px; letter-spacing: 0; opacity: .85; }
 .ss-date { font-size: 28px; font-weight: 800; opacity: .95; }
 .ss-weather { font-size: 26px; font-weight: 800; margin-top: 6px; }
-.ss-events { position: absolute; right: 44px; bottom: 44px; display: flex; flex-direction: column; gap: 8px; max-width: 380px; }
+.ss-events { display: flex; flex-direction: column; gap: 14px; }
 .ss-ev-head { font-weight: 900; text-transform: uppercase; letter-spacing: .1em; font-size: 13px; opacity: .85; }
 .ss-ev { --c: #fff; background: rgba(255, 255, 255, .16); backdrop-filter: blur(12px); border-left: 5px solid var(--c); border-radius: 12px; padding: 10px 14px; font-weight: 800; font-size: 17px; }
 .ss-ev b { margin-right: 10px; }
@@ -439,7 +439,6 @@ form:not(.is-allday) .only-timed, form.is-allday .only-allday, form.is-repeat .o
   .mcell { padding: 3px; }
   .chip { font-size: 11px; padding: 1px 3px; }
   .ss-time { font-size: 72px; }
-  .ss-events { display: none; }
   .field.inline > span:first-child { min-width: 0; width: 100%; }
   .dname span:last-child { display: none; }
 }
@@ -791,3 +790,16 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
 .nb-cat h4 { margin: 12px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); position: sticky; top: 0; background: var(--surface); padding: 4px 0; }
 .nb-row { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid #F1EBE4; font-weight: 700; cursor: pointer; }
 .nb-row input { width: 20px; height: 20px; accent-color: var(--accent); }
+
+/* idle screen layout: events (today + tomorrow) stacked above the clock on the left, news bottom-right */
+.ss-left { position: absolute; left: 48px; bottom: 44px; width: min(440px, 44vw); display: flex; flex-direction: column; gap: 22px; }
+.ss-ev-group { display: flex; flex-direction: column; gap: 7px; }
+.ss-ev { display: flex; gap: 10px; align-items: baseline; }
+.ss-ev b { flex: none; min-width: 74px; margin-right: 0; }
+.ss-ev span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-ev-none, .ss-ev-more { font-weight: 700; font-size: 15px; opacity: .75; padding-left: 4px; }
+.ss-news { top: auto; left: auto; right: 44px; bottom: 44px; width: min(460px, 42vw); max-width: none; }
+@media (max-width: 700px) {
+  .ss-left { left: 18px; right: 18px; width: auto; bottom: 24px; }
+  .ss-news { left: 18px; right: 18px; top: 56px; bottom: auto; width: auto; }
+}
