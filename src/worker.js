@@ -724,6 +724,34 @@ async function handleApi(request, env, url, ctx) {
 
   // News headlines for the idle screen, from the RSS/Atom feeds saved in family settings.
   // Only headline, link, time and outlet name are passed on — no article text.
+  // Bible Gateway's Verse of the Day (their syndication feed, shown with their credit line), cached a few hours
+  if (path === '/api/verse' && method === 'GET') {
+    const version = (url.searchParams.get('version') || 'KJV').replace(/[^A-Za-z0-9-]/g, '').slice(0, 12) || 'KJV';
+    const cache = caches.default, key = new Request(`https://verse-cache.calendora/${version}/${new Date().toISOString().slice(0, 10)}`);
+    const hit = await cache.match(key).catch(() => null);
+    if (hit) return new Response(hit.body, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+    let out = null;
+    try {
+      const r = await fetch(`https://www.biblegateway.com/votd/get/?format=json&version=${encodeURIComponent(version)}`, { headers: { 'User-Agent': 'Calendora family calendar' } });
+      const j = r.ok ? await r.json() : null;
+      const v = j && (j.votd || j);
+      if (v && (v.text || v.content)) out = { text: xmlText(v.text || v.content).replace(/^[“"]|[”"]$/g, ''), reference: xmlText(v.display_ref || v.reference || ''), version: xmlText(v.version || version), link: v.permalink || 'https://www.biblegateway.com/' };
+    } catch (e) { out = null; }
+    if (!out) {
+      try {
+        const r = await fetch(`https://www.biblegateway.com/votd/get/?format=atom&version=${encodeURIComponent(version)}`, { headers: { 'User-Agent': 'Calendora family calendar' } });
+        const x = await r.text(), entry = (x.match(/<entry[\s>][\s\S]*?<\/entry>/i) || [''])[0];
+        const text = xmlText(xmlTag(entry, 'content')).replace(/Brought to you by BibleGateway\.com.*$/i, '').replace(/^[“"]|[”"]$/g, '').trim();
+        const m = /<link\b[^>]*?href=["']([^"']+)["']/i.exec(entry);
+        if (text) out = { text, reference: xmlText(xmlTag(entry, 'title')), version, link: m ? m[1].replace(/&amp;/g, '&') : 'https://www.biblegateway.com/' };
+      } catch (e) { out = null; }
+    }
+    if (!out) return json({ error: 'Could not get today’s verse' }, 502);
+    const res = new Response(JSON.stringify(out), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=21600' } });
+    if (ctx) ctx.waitUntil(cache.put(key, res.clone())); else await cache.put(key, res.clone()).catch(() => {});
+    return new Response(JSON.stringify(out), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+  }
+
   // Test feed links (used when adding a source, and to check the built-in catalog)
   if (path === '/api/news/check' && method === 'POST') {
     const body = await readJson(request);
