@@ -813,3 +813,6 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
 .ssn-item .ssn-src { font-size: 12px; letter-spacing: .06em; margin-top: 3px; opacity: .8; }
 .ss-left { width: min(520px, 48vw); }
 @media (max-width: 700px) { .ss-news { left: auto; right: auto; top: auto; } .ssn-item .ssn-title { font-size: 15px; } .ss-left { width: auto; } }
+/* the next event on the idle screen */
+.ss-ev.next { background: #D93A3A; border-left-color: #fff; box-shadow: 0 6px 22px rgba(217, 58, 58, .45); }
+.ss-ev.next em { margin-left: auto; flex: none; font-style: normal; font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .06em; background: #fff; color: #C62828; padding: 2px 9px; border-radius: 999px; }

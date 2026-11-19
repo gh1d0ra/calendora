@@ -3884,6 +3884,13 @@
     if (m) { const im = new Image(); im.src = m[1]; } // warm the next photo so it doesn't pop in
   }
   const today_ = () => today();
+  // "in 25 min" / "in 2 h" for the next event today
+  function nextIn(e, isTomorrow) {
+    if (isTomorrow) return '';
+    const n = new Date(), mins = toMin(e.startTime) - (n.getHours() * 60 + n.getMinutes());
+    if (mins <= 0) return ' · now';
+    return mins < 60 ? ` · in ${mins} min` : ` · in ${Math.floor(mins / 60)} h${mins % 60 ? ` ${mins % 60} min` : ''}`;
+  }
   function updateScreensaver() {
     if (!ssOn) return;
     const n = new Date();
@@ -3897,7 +3904,9 @@
     const today = eventsOn(todayStr()).filter(e => e.allDay || toMin(e.endTime || e.startTime) >= nowMin);
     const tmr = eventsOn(ymd(addDays(today_(), 1)));
     const max = matchMedia('(max-width: 700px)').matches ? 3 : 5;
-    const block = (label, list, empty) => `<div class="ss-ev-group"><div class="ss-ev-head">${label}</div>${list.length ? list.slice(0, max).map(e => `<div class="ss-ev" style="--c:${evColor(e)}"><b>${e.allDay ? 'All day' : fmtTime(e.startTime)}</b><span>${esc(e.title)}</span></div>`).join('') + (list.length > max ? `<div class="ss-ev-more">+${list.length - max} more</div>` : '') : `<div class="ss-ev-none">${empty}</div>`}</div>`;
+    // the next event to start (today, else tomorrow) is marked in red
+    const next = today.find(e => !e.allDay && toMin(e.startTime) >= nowMin) || (today.some(e => !e.allDay && toMin(e.startTime) >= nowMin) ? null : tmr.find(e => !e.allDay));
+    const block = (label, list, empty) => `<div class="ss-ev-group"><div class="ss-ev-head">${label}</div>${list.length ? list.slice(0, max).map(e => `<div class="ss-ev ${e === next ? 'next' : ''}" style="--c:${evColor(e)}"><b>${e.allDay ? 'All day' : fmtTime(e.startTime)}</b><span>${esc(e.title)}</span>${e === next ? `<em>Next${nextIn(e, list === tmr)}</em>` : ''}</div>`).join('') + (list.length > max ? `<div class="ss-ev-more">+${list.length - max} more</div>` : '') : `<div class="ss-ev-none">${empty}</div>`}</div>`;
     $('#ssEvents').innerHTML = block('Today', today, 'Nothing else today') + block(`Tomorrow · ${DOW_LONG[addDays(today_(), 1).getDay()]}`, tmr, 'Nothing planned');
   }
   function stopScreensaver() {
