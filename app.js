@@ -1592,6 +1592,8 @@
     const r = 20, c = 2 * Math.PI * r;
     return `<div class="ring"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="${r}" class="ring-bg"/><circle cx="24" cy="24" r="${r}" class="ring-fg" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - pct)}"/></svg><span>${label}</span></div>`;
   }
+  // People shown in Chores (someone too young for chores can be switched off in Settings → Family)
+  const choreMembers = () => state.members.filter(m => !m.noChores);
   function renderChores() {
     const d = ui.choreDate, ds = ymd(d);
     const cv = state.ui.choreView || 'day';
@@ -1610,13 +1612,13 @@
       <div class="seg">${[['day', 'Day'], ['week', 'Week'], ['month', 'Month']].map(([k, l]) => `<button class="${cv === k ? 'on' : ''}" data-action="chore-view" data-v="${k}">${l}</button>`).join('')}</div>
       <span class="spacer"></span>
       <button class="btn primary" data-action="new-chore">${icon('plus')} Add chore</button>`;
-    if (!state.members.length) { $('#view').innerHTML = emptyMembers(); return; }
+    if (!choreMembers().length) { $('#view').innerHTML = state.members.length ? '<div class="empty card"><p>Everyone is switched off for chores.</p><p class="muted">Turn someone back on in Settings → Family.</p></div>' : emptyMembers(); return; }
     ensureChoreCreated();
     if (cv === 'week') return renderChoresWeek(ws);
     if (cv === 'month') return renderChoresMonth(d);
     const done = state.choreDone[ds] || {};
-    if (!state.members.length) { $('#view').innerHTML = emptyMembers(); return; }
-    $('#view').innerHTML = `<div class="chores">${state.members.map(m => {
+    if (!choreMembers().length) { $('#view').innerHTML = state.members.length ? '<div class="empty card"><p>Everyone is switched off for chores.</p><p class="muted">Turn someone back on in Settings → Family.</p></div>' : emptyMembers(); return; }
+    $('#view').innerHTML = `<div class="chores">${choreMembers().map(m => {
       const due = choresDue(m.id, ds), list = due.map(x => x.c), fromOf = Object.fromEntries(due.map(x => [x.c.id, x.from]));
       const n = list.filter(c => done[c.id]).length;
       const pct = list.length ? n / list.length : 0;
@@ -1641,7 +1643,7 @@
         </div>
       </div>`;
     }).join('')}</div>
-    <div class="chore-dots">${state.members.map((m, i) => `<button class="${i === (ui.choreCol || 0) ? 'on' : ''}" style="--c:${m.color}" data-action="chore-col" data-i="${i}" aria-label="${esc(m.name)}">${esc(m.name)}</button>`).join('')}</div>`;
+    <div class="chore-dots">${choreMembers().map((m, i) => `<button class="${i === (ui.choreCol || 0) ? 'on' : ''}" style="--c:${m.color}" data-action="chore-col" data-i="${i}" aria-label="${esc(m.name)}">${esc(m.name)}</button>`).join('')}</div>`;
     // phones: one person per screen; swipe sideways for the next person
     const box = $('.chores');
     if (box && matchMedia('(max-width: 600px)').matches) {
@@ -1658,7 +1660,7 @@
     $('#view').innerHTML = `<div class="cweek" style="grid-template-columns: 170px repeat(7, minmax(120px, 1fr))">
       <div class="cw-corner"></div>
       ${days.map(x => `<button class="cw-day ${ymd(x) === tds ? 'today' : ''}" data-action="chore-goto" data-date="${ymd(x)}"><span>${DOW[x.getDay()]}</span><b>${x.getDate()}</b></button>`).join('')}
-      ${state.members.map(m => {
+      ${choreMembers().map(m => {
         let tot = 0, dn = 0, stars = 0;
         const cells = days.map(x => {
           const ds = ymd(x), done = state.choreDone[ds] || {}, list = choresFor(m.id, ds);
@@ -1679,7 +1681,7 @@
     const head = [...Array(7)].map((_, i) => `<div class="cm-dow">${DOW[addDays(start, i).getDay()]}</div>`).join('');
     const cells = [...Array(weeks * 7)].map((_, i) => {
       const x = addDays(start, i), ds = ymd(x), done = state.choreDone[ds] || {};
-      const rows = state.members.map(m => { const list = choresFor(m.id, ds); if (!list.length) return ''; const n = list.filter(c => done[c.id]).length;
+      const rows = choreMembers().map(m => { const list = choresFor(m.id, ds); if (!list.length) return ''; const n = list.filter(c => done[c.id]).length;
         return `<div class="cm-row" style="--c:${m.color}"><span class="cm-dot"></span><span class="cm-name">${esc(m.name)}</span><span class="cm-bar"><i style="width:${Math.round(n / list.length * 100)}%"></i></span><span class="cm-n ${n === list.length ? 'all' : ''}">${n === list.length ? '✓' : `${n}/${list.length}`}</span></div>`; }).join('');
       return `<button class="cm-cell ${x.getMonth() !== d.getMonth() ? 'other' : ''} ${ds === tds ? 'today' : ''} ${ds > tds ? 'future' : ''}" data-action="chore-goto" data-date="${ds}"><span class="cm-date">${x.getDate()}</span>${rows}</button>`;
     }).join('');
@@ -2097,6 +2099,7 @@
         <div class="sec-head"><h3>Family</h3><button class="btn primary" data-action="new-member">${icon('plus')} Add member</button></div>
         <div class="member-list">${state.members.map(m => `
           <div class="member-row">${avatar(m, 'lg')}<span class="cname">${esc(m.name)}</span><span class="spacer"></span>
+            <label class="switch compact" title="Show ${esc(m.name)} in Chores"><input type="checkbox" data-action="member-chores" data-id="${m.id}" ${m.noChores ? '' : 'checked'}><span class="track"></span><span>Chores</span></label>
             <button class="btn" data-action="edit-member" data-id="${m.id}">${icon('edit')} Edit</button></div>`).join('') || '<div class="empty-sm">No family members yet.</div>'}
         </div>
       </section>
@@ -2413,7 +2416,7 @@
 
   function choreModal(c, preset = {}) {
     const isNew = !c;
-    const ch = c ? { ...c } : { id: uid(), title: '', emoji: '🧹', memberId: preset.memberId || (state.members[0] && state.members[0].id), time: 'anytime', stars: 1, repeat: 'daily', days: [], date: ymd(ui.choreDate), carry: true, created: todayStr() };
+    const ch = c ? { ...c } : { id: uid(), title: '', emoji: '🧹', memberId: preset.memberId || ((choreMembers()[0] || state.members[0] || {}).id), time: 'anytime', stars: 1, repeat: 'daily', days: [], date: ymd(ui.choreDate), carry: true, created: todayStr() };
     modal({
       title: isNew ? 'New chore' : 'Edit chore',
       body: `
@@ -2453,11 +2456,12 @@
       body: `
         <label class="field"><span>Name</span><input name="name" value="${esc(mm.name)}" autofocus maxlength="24" placeholder="e.g. Grandpa"></label>
         <div class="field"><span>Color</span><div class="color-pick">${COLORS.map(c => `<label><input type="radio" name="color" value="${c}" ${c === mm.color ? 'checked' : ''}><span style="--c:${c}"></span></label>`).join('')}</div></div>
-        <label class="field"><span>Emoji instead of initials <small class="muted">(optional)</small></span><input name="emoji" value="${esc(mm.emoji || '')}" maxlength="4" placeholder="🦊"></label>`,
+        <label class="field"><span>Emoji instead of initials <small class="muted">(optional)</small></span><input name="emoji" value="${esc(mm.emoji || '')}" maxlength="4" placeholder="🦊"></label>
+        <label class="check-row"><input type="checkbox" name="chores" ${mm.noChores ? '' : 'checked'}><span>Show in Chores<br><small class="muted">Turn off for someone too young for chores — they stay on the calendar.</small></span></label>`,
       onSave(form) {
         const name = fval(form, 'name');
         if (!name) { form.elements.name.classList.add('invalid'); return false; }
-        const out = { ...mm, name, color: fall(form, 'color')[0] || mm.color, emoji: fval(form, 'emoji') };
+        const out = { ...mm, name, color: fall(form, 'color')[0] || mm.color, emoji: fval(form, 'emoji'), noChores: !form.elements.chores.checked };
         if (isNew) state.members.push(out); else state.members = state.members.map(x => x.id === out.id ? out : x);
         save(); render();
       },
@@ -2698,6 +2702,7 @@
     'edit-event'(el) { const ev = allEvents().find(e => e.id === el.dataset.id); if (ev) eventModal(ev, el.dataset.date); },
     noop() {},
     'reload-app'() { location.reload(); },
+    'member-chores'(el) { const m = state.members.find(x => x.id === el.dataset.id); if (!m) return; m.noChores = !m.noChores; ui.choreCol = 0; save(); renderView(); toast(m.noChores ? `${m.name} is hidden from Chores` : `${m.name} is back in Chores`); },
     async 'install-app'() { if (!installPrompt) return; installPrompt.prompt(); const r = await installPrompt.userChoice.catch(() => null); installPrompt = null; if (r && r.outcome !== 'accepted') toast('You can install it any time from Settings'); renderView(); },
     'h-who'(el) { hUI.who = el.dataset.id; renderView(); },
     'h-workout'(el) { workoutModal(hArr('workouts').find(w => w.id === el.dataset.id)); },
