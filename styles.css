@@ -728,3 +728,25 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
 .week-time .evmeta { font-size: 11.5px; }
 .chores { gap: 10px; }
 .update-bar { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 9000; border: 0; background: var(--ink); color: #fff; font: inherit; font-weight: 700; font-size: 16px; padding: 12px 22px; border-radius: 999px; box-shadow: 0 10px 30px rgba(0,0,0,.25); cursor: pointer; }
+
+/* chores in narrow columns (portrait tablet): title gets the full width, icon/stars/check go underneath */
+.ccol { container-type: inline-size; }
+@container (max-width: 300px) {
+  .chead { padding: 16px 10px 10px; gap: 8px; }
+  .chead .avatar { width: 40px; height: 40px; font-size: 17px; }
+  .cname { font-size: 17px; }
+  .cstat { font-size: 12px; white-space: nowrap; }
+  .ring { width: 40px; height: 40px; }
+  .ring span { font-size: 11px; }
+  .ccol.alldone .chead::after { right: 56px; top: 16px; font-size: 18px; }
+  .cbody { padding: 0 8px 12px; }
+  .chore { display: grid; grid-template-columns: auto 1fr auto; grid-template-areas: "title title title" "emoji stars check"; align-items: center; gap: 6px 8px; padding: 10px 10px 8px; min-height: 0; }
+  .chore .ctext { display: contents; }
+  .chore .ctitle { grid-area: title; font-size: 15px; line-height: 1.25; }
+  .chore .cemoji { grid-area: emoji; font-size: 22px; width: auto; text-align: left; }
+  .chore .cstars { grid-area: stars; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+  .chore .carry-tag { margin-left: 0; }
+  .chore .check { grid-area: check; width: 30px; height: 30px; }
+  .chore .mini-btn { position: absolute; top: 4px; right: 4px; }
+}
+.chores { grid-auto-columns: minmax(160px, 1fr); }
