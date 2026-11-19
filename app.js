@@ -1475,7 +1475,7 @@
       <div class="logo" title="Calendora"><span></span></div>
       ${[...NAV, ...(state.settings.healthEnabled ? [['health', 'Health']] : []), ...(state.settings.babyEnabled ? [['baby', 'Baby']] : [])].map(([v, label]) => `<button class="nav-btn ${state.ui.view === v ? 'active' : ''}" data-action="view" data-v="${v}">${icon(v)}<span>${label}</span></button>`).join('')}
       <div class="nav-spacer"></div>
-      <button class="nav-btn" data-action="sleep" title="Start the photo frame now">${icon('sleep')}<span>Frame</span></button>
+      <button class="nav-btn" data-action="sleep" title="Show the idle screen now">${icon('sleep')}<span>Frame</span></button>
       <button class="nav-btn" data-action="fullscreen" title="Full screen">${icon('expand')}<span>Full</span></button>
       <button class="nav-btn ${state.ui.view === 'settings' ? 'active' : ''}" data-action="view" data-v="settings">${icon('settings')}<span>Settings</span></button>`;
   }
