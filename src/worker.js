@@ -488,7 +488,7 @@ function parseFeed(xml) {
   }).filter(x => x.title);
 }
 async function readFeed(url, ctx) {
-  const cache = caches.default, key = new Request(`https://news-cache.calendora/${encodeURIComponent(url)}`);
+  const cache = caches.default, key = new Request(`https://news-cache-v2.calendora/${encodeURIComponent(url)}`);
   const hit = await cache.match(key).catch(() => null);
   if (hit) return hit.json();
   let r;
