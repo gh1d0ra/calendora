@@ -125,7 +125,7 @@
       members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [], babies: [], babyLog: [], workouts: [], supplements: [], suppTaken: {}, illnesses: [], healthLog: [],
       hidden: [], gEvents: [], gSyncedAt: null, gAcctAt: {},
       settings: {
-        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, newsEnabled: true, newsFeeds: [{ id: 'npr', name: 'NPR News', url: 'https://feeds.npr.org/1001/rss.xml' }, { id: 'bbcworld', name: 'BBC World', url: 'https://feeds.bbci.co.uk/news/world/rss.xml' }], dinnerPresets: [], dinnerSeed: 0,
+        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, verseEnabled: true, verseVersion: 'KJV', newsEnabled: true, newsFeeds: [{ id: 'npr', name: 'NPR News', url: 'https://feeds.npr.org/1001/rss.xml' }, { id: 'bbcworld', name: 'BBC World', url: 'https://feeds.bbci.co.uk/news/world/rss.xml' }], dinnerPresets: [], dinnerSeed: 0,
         google: { clientId: '', connected: false, accounts: [], calendars: {}, defaultCal: '' },
       },
       ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan', textSize: 0.85 },
@@ -1420,10 +1420,34 @@
     loadNews().then(showHeadline);
     news.timer = setInterval(() => { news.idx += 3; showHeadline(); if (Date.now() - news.at > 15 * 60000) loadNews(); }, 15000);
   }
+  // ---- Verse of the Day: stays on the idle screen all day (Bible Gateway, with their credit line)
+  const VERSE_VERSIONS = [['KJV', 'King James Version'], ['NKJV', 'New King James Version'], ['ESV', 'English Standard Version'], ['NIV', 'New International Version'], ['NLT', 'New Living Translation'], ['NASB', 'New American Standard Bible'], ['CSB', 'Christian Standard Bible']];
+  const verse = { data: null, day: '', ver: '' };
+  try { const c = JSON.parse(localStorage.getItem('calendora.verse') || 'null'); if (c && c.data) Object.assign(verse, c); } catch (e) { /* none */ }
+  async function loadVerse() {
+    const ver = state.settings.verseVersion || 'KJV', day = todayStr();
+    if (verse.data && verse.day === day && verse.ver === ver) return;
+    if (!cloudOn() || !cloud.signedIn) return;
+    try {
+      const r = await api(`/api/verse?version=${enc(ver)}`);
+      if (r.ok && r.data && r.data.text) { Object.assign(verse, { data: r.data, day, ver }); try { localStorage.setItem('calendora.verse', JSON.stringify(verse)); } catch (e) { /* full */ } }
+    } catch (e) { /* offline: keep yesterday's until we can refresh */ }
+  }
+  function showVerse() {
+    const box = $('#ssVerse'); if (!box) return;
+    const v = verse.data;
+    if (!state.settings.verseEnabled || !v) { box.hidden = true; return; }
+    box.hidden = false;
+    box.dataset.link = v.link || '';
+    box.innerHTML = `<div class="ss-ev-head">✝️ Verse of the Day</div><div class="ssv-text">${esc(v.text)}</div><div class="ssv-ref">${esc(v.reference)} <span>${esc(v.version || '')}</span></div><div class="ssv-credit">Powered by BibleGateway.com</div>`;
+  }
   function newsSection() {
     const fs = newsFeeds(), st = Object.fromEntries((news.feeds || []).map(f => [f.id, f]));
     return `<section class="card">
-      <h3>News on the idle screen</h3>
+      <h3>Verse & news on the idle screen</h3>
+      <label class="switch"><input type="checkbox" data-setting-bool="verseEnabled" ${state.settings.verseEnabled ? 'checked' : ''}><span class="track"></span><span>Show the Verse of the Day</span></label>
+      ${state.settings.verseEnabled ? `<label class="field inline"><span>Bible translation</span><select data-setting="verseVersion">${VERSE_VERSIONS.map(([k, n]) => `<option value="${k}" ${(state.settings.verseVersion || 'KJV') === k ? 'selected' : ''}>${n} (${k})</option>`).join('')}</select></label><p class="muted small">From Bible Gateway's Verse of the Day. It stays on the idle screen all day and changes each morning.</p>` : ''}
+      <hr class="soft">
       <label class="switch"><input type="checkbox" data-setting-bool="newsEnabled" ${state.settings.newsEnabled ? 'checked' : ''}><span class="track"></span><span>Show headlines on the idle screen</span></label>
       ${state.settings.newsEnabled ? `
       <p class="muted small">Three headlines show at a time, with the article's picture when the source provides one, changing every 15 seconds, with each outlet's name. Tap one to read the full story on the outlet's site.</p>
@@ -3871,7 +3895,7 @@
     ssIdx = Math.floor(Math.random() * ssSlides.length);
     ss.innerHTML = `<div class="ss-slide" id="ssA"></div><div class="ss-slide" id="ssB"></div><div class="ss-shade"></div>
       <div class="ss-news" id="ssNews" hidden></div>
-      <div class="ss-left"><div class="ss-events" id="ssEvents"></div>
+      <div class="ss-left"><div class="ss-verse" id="ssVerse" hidden></div><div class="ss-events" id="ssEvents"></div>
         <div class="ss-info"><div class="ss-time" id="ssTime"></div><div class="ss-date" id="ssDate"></div><div class="ss-weather" id="ssWeather"></div></div></div>
       <div class="ss-hint">Tap anywhere to return</div>`;
     ss.hidden = false;
@@ -3880,6 +3904,7 @@
     updateScreensaver();
     ssTimer = setInterval(() => { ssIdx = (ssIdx + 1) % ssSlides.length; showSlide(); }, 12000);
     startNews();
+    showVerse(); loadVerse().then(showVerse);
   }
   function showSlide() {
     ssFlip = !ssFlip;
@@ -3927,7 +3952,7 @@
   }
   ss.addEventListener('click', e => {
     e.preventDefault(); e.stopPropagation();
-    const n = e.target.closest('.ssn-item');
+    const n = e.target.closest('.ssn-item') || e.target.closest('#ssVerse');
     if (n && n.dataset.link) { window.open(n.dataset.link, '_blank', 'noopener'); return; } // read the story; the idle screen stays
     stopScreensaver();
   });

@@ -457,7 +457,7 @@ const DEFAULT_NEWS = [{ id: 'npr', name: 'NPR News', url: 'https://feeds.npr.org
 function xmlText(s) {
   return String(s || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/<[^>]+>/g, '')
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
-    .replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+    .replace(/&(ldquo|rdquo|lsquo|rsquo|mdash|ndash|hellip|laquo|raquo);/g, (_, n) => ({ ldquo: '“', rdquo: '”', lsquo: '‘', rsquo: '’', mdash: '—', ndash: '–', hellip: '…', laquo: '«', raquo: '»' })[n]).replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ').trim();
 }
 const xmlTag = (block, tag) => { const m = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`, 'i').exec(block); return m ? m[1] : ''; };
