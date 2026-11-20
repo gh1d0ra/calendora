@@ -837,3 +837,20 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
   .ss-news .ssn-item.has-img .ssn-img { width: 112px; height: 84px; }
 }
 @media (max-width: 700px) { .ss-news { top: 52px; left: 18px; right: 18px; } .ss-news .ssn-item.has-img .ssn-img { width: 76px; height: 60px; } }
+/* Verse of the Day: stays all day. Wide screens: bottom-right; tablets/phones: above the events */
+.ss-verse { background: rgba(0, 0, 0, .26); backdrop-filter: blur(12px); border-radius: 18px; padding: 16px 20px; cursor: pointer; text-shadow: 0 1px 8px rgba(0, 0, 0, .3); }
+.ssv-text { font-size: 22px; font-weight: 700; line-height: 1.4; font-style: italic; margin-top: 6px; }
+.ssv-ref { font-size: 16px; font-weight: 900; margin-top: 8px; }
+.ssv-ref span { font-weight: 700; opacity: .75; margin-left: 4px; font-size: 13px; }
+.ssv-credit { font-size: 11px; font-weight: 700; opacity: .65; margin-top: 6px; letter-spacing: .03em; }
+/* bottom-right, beside the events and clock, on every screen wider than a phone */
+@media (min-width: 601px) {
+  .ss-verse { position: fixed; right: 44px; bottom: 44px; width: min(480px, calc(100vw - min(560px, 50vw) - 48px - 44px - 28px)); max-height: calc(100vh - 380px); overflow: hidden; }
+}
+@media (min-width: 601px) and (max-width: 1000px) { .ss-left { width: min(560px, 52vw); } .ss-verse { right: 24px; bottom: 32px; } .ssv-text { font-size: 19px; } }
+/* the NEXT tag no longer squeezes the event name: it moves under it when space is short */
+.ss-ev.next { flex-wrap: wrap; row-gap: 4px; }
+.ss-ev span { flex: 1 1 auto; min-width: 0; }
+.ss-ev.next em { margin-left: auto; }
+
+@media (max-width: 700px) { .ssv-text { font-size: 17px; } .ss-verse { padding: 12px 14px; } }
