@@ -1544,6 +1544,12 @@
     if (code >= 95) return '⛈️';
     return '🌡️';
   }
+  function wDesc(code) {
+    if (code === 0) return 'Clear'; if (code <= 2) return 'Partly cloudy'; if (code === 3) return 'Cloudy';
+    if (code === 45 || code === 48) return 'Fog'; if (code >= 51 && code <= 57) return 'Drizzle'; if (code >= 61 && code <= 67) return 'Rain';
+    if (code >= 71 && code <= 77) return 'Snow'; if (code >= 80 && code <= 82) return 'Showers'; if (code === 85 || code === 86) return 'Snow showers';
+    if (code >= 95) return 'Thunderstorms'; return '';
+  }
   function dailyWeather(ds) {
     const w = ui.weather;
     if (!w || !w.daily) return null;
@@ -1562,8 +1568,15 @@
       ${d ? `<span class="wx-hilo">H ${d.hi}° · L ${d.lo}°</span>` : ''}`;
     el.title = state.settings.weather ? state.settings.weather.name : '';
   }
+  // Fetch again whenever the family's location or units change (e.g. set on another device)
+  let wxKey = '';
+  function ensureWeather() {
+    const loc = state.settings.weather, k = loc ? `${loc.lat},${loc.lon},${state.settings.tempUnit}` : '';
+    if (k !== wxKey) fetchWeather();
+  }
   async function fetchWeather() {
     const loc = state.settings.weather;
+    wxKey = loc ? `${loc.lat},${loc.lon},${state.settings.tempUnit}` : '';
     if (!loc) { ui.weather = null; renderWeather(); return; }
     try {
       const u = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}&current=temperature_2m,weather_code,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=14&timezone=auto&temperature_unit=${state.settings.tempUnit}`;
@@ -1587,6 +1600,7 @@
     renderClock();
     renderMemberFilter();
     renderWeather();
+    ensureWeather();
     renderSyncPill();
     renderView();
   }
@@ -2417,8 +2431,8 @@
       ${googleSection()}
       <section class="card">
         <h3>Weather</h3>
-        <p class="muted">${s.weather ? `Showing weather for <b>${esc(s.weather.name)}</b>.` : 'Add a location to see the forecast in the header and on the week view.'}</p>
-        <form class="row" data-form="weather-search"><input name="q" placeholder="City or ZIP code" autocomplete="off" /><button class="btn" type="submit">Search</button>
+        <p class="muted">${s.weather ? `Showing weather for <b>${esc(s.weather.name)}</b>.` : 'Add your ZIP code to see the forecast in the header, on the week view and on the idle screen.'}</p>
+        <form class="row" data-form="weather-search"><input name="q" placeholder="ZIP code (e.g. 30301) or city" autocomplete="off" inputmode="text" /><button class="btn" type="submit">Search</button>
           <button class="btn" type="button" data-action="geo">📍 Use my location</button>
           ${s.weather ? '<button class="btn ghost" type="button" data-action="clear-weather">Remove</button>' : ''}</form>
         <div id="geoResults" class="geo-results"></div>
@@ -3194,6 +3208,14 @@
     if (f.dataset.form === 'weather-search') {
       const q = f.elements.q.value.trim(); if (!q) return;
       const box = $('#geoResults'); box.innerHTML = '<span class="muted">Searching…</span>';
+      if (/^\d{5}$/.test(q)) {
+        try {
+          const r = await api(`/api/zip?zip=${q}`);
+          if (r.ok && r.data && r.data.lat) { state.settings.weather = { lat: r.data.lat, lon: r.data.lon, name: r.data.name, zip: q }; save(); fetchWeather(); renderView(); toast(`Weather set to ${r.data.name}`); return; }
+          box.innerHTML = `<span class="muted">${esc((r.data && r.data.error) || 'ZIP code not found')}</span>`;
+        } catch (e) { box.innerHTML = '<span class="muted">ZIP lookup is unavailable right now — try the city name.</span>'; }
+        return;
+      }
       try {
         const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=6&language=en&format=json`);
         const j = await r.json();
@@ -3895,8 +3917,8 @@
     ssIdx = Math.floor(Math.random() * ssSlides.length);
     ss.innerHTML = `<div class="ss-slide" id="ssA"></div><div class="ss-slide" id="ssB"></div><div class="ss-shade"></div>
       <div class="ss-news" id="ssNews" hidden></div>
-      <div class="ss-left"><div class="ss-verse" id="ssVerse" hidden></div><div class="ss-events" id="ssEvents"></div>
-        <div class="ss-info"><div class="ss-time" id="ssTime"></div><div class="ss-date" id="ssDate"></div><div class="ss-weather" id="ssWeather"></div></div></div>
+      <div class="ss-left"><div class="ss-verse" id="ssVerse" hidden></div><div class="ss-wx" id="ssWx"></div><div class="ss-events" id="ssEvents"></div>
+        <div class="ss-info"><div class="ss-time" id="ssTime"></div><div class="ss-date" id="ssDate"></div></div></div>
       <div class="ss-hint">Tap anywhere to return</div>`;
     ss.hidden = false;
     requestAnimationFrame(() => ss.classList.add('on'));
@@ -3929,8 +3951,18 @@
     const n = new Date();
     $('#ssTime').innerHTML = state.settings.use24h ? `${pad(n.getHours())}:${pad(n.getMinutes())}` : `${n.getHours() % 12 || 12}:${pad(n.getMinutes())}<small>${n.getHours() < 12 ? 'AM' : 'PM'}</small>`;
     $('#ssDate').textContent = `${DOW_LONG[n.getDay()]}, ${MONTHS[n.getMonth()]} ${n.getDate()}`;
-    const w = ui.weather;
-    $('#ssWeather').textContent = w && w.current ? `${wIcon(w.current.weather_code, w.current.is_day)} ${Math.round(w.current.temperature_2m)}°` : '';
+    // weather card above the events: now, today's high/low, and the next three days
+    const w = ui.weather, wx = $('#ssWx');
+    if (wx) {
+      if (w && w.current && w.daily) {
+        const d = w.daily, t0 = d.time.indexOf(todayStr());
+        const days = t0 < 0 ? [] : [1, 2, 3].map(k => t0 + k).filter(i => i < d.time.length);
+        wx.innerHTML = `<div class="sw-now"><span class="sw-ic">${wIcon(w.current.weather_code, w.current.is_day)}</span><span class="sw-temp">${Math.round(w.current.temperature_2m)}°</span>
+          <div class="sw-meta"><b>${esc(wDesc(w.current.weather_code))}</b>${t0 >= 0 ? `<span>H ${Math.round(d.temperature_2m_max[t0])}° · L ${Math.round(d.temperature_2m_min[t0])}°</span>` : ''}${state.settings.weather ? `<small>${esc(state.settings.weather.name)}</small>` : ''}</div></div>
+          <div class="sw-days">${days.map(i => `<div class="sw-day"><span>${DOW[parse(d.time[i]).getDay()]}</span><span class="sw-dic">${wIcon(d.weather_code[i])}</span><span>${Math.round(d.temperature_2m_max[i])}° <em>${Math.round(d.temperature_2m_min[i])}°</em></span></div>`).join('')}</div>`;
+        wx.hidden = false;
+      } else wx.innerHTML = state.settings.weather ? '' : '<div class="sw-hint">🌤️ Add your ZIP code in Settings → Weather to see the forecast here</div>';
+    }
     const nowMin = n.getHours() * 60 + n.getMinutes();
     dayCache = new Map();
     // today's remaining events, then tomorrow's, stacked above the clock

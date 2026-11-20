@@ -724,6 +724,20 @@ async function handleApi(request, env, url, ctx) {
 
   // News headlines for the idle screen, from the RSS/Atom feeds saved in family settings.
   // Only headline, link, time and outlet name are passed on — no article text.
+  // US ZIP code → place name and coordinates for the weather (Zippopotam.us, no key needed)
+  if (path === '/api/zip' && method === 'GET') {
+    const zip = (url.searchParams.get('zip') || '').trim();
+    if (!/^\d{5}$/.test(zip)) return json({ error: 'Enter a 5-digit ZIP code' }, 400);
+    try {
+      const r = await fetch(`https://api.zippopotam.us/us/${zip}`, { headers: { 'User-Agent': 'Calendora family calendar' } });
+      if (r.status === 404) return json({ error: 'ZIP code not found' }, 404);
+      if (!r.ok) throw new Error(String(r.status));
+      const j = await r.json(), p = (j.places || [])[0];
+      if (!p) return json({ error: 'ZIP code not found' }, 404);
+      return json({ name: `${p['place name']}, ${p['state abbreviation']} ${zip}`, lat: Number(p.latitude), lon: Number(p.longitude) });
+    } catch (e) { return json({ error: 'ZIP lookup is unavailable right now — try the city name' }, 502); }
+  }
+
   // Bible Gateway's Verse of the Day (their syndication feed, shown with their credit line), cached a few hours
   if (path === '/api/verse' && method === 'GET') {
     const version = (url.searchParams.get('version') || 'KJV').replace(/[^A-Za-z0-9-]/g, '').slice(0, 12) || 'KJV';
