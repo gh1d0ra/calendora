@@ -502,6 +502,8 @@ async function readFeed(url, ctx) {
   if (ctx) ctx.waitUntil(cache.put(key, res)); else await cache.put(key, res).catch(() => {});
   return items;
 }
+// One well-known passage per day for the ESV Verse of the Day (references only; text comes from Crossway's API)
+const VERSE_REFS = ["Genesis 1:1", "Genesis 50:20", "Exodus 14:14", "Exodus 15:2", "Numbers 6:24-26", "Deuteronomy 6:5", "Deuteronomy 31:6", "Deuteronomy 31:8", "Joshua 1:9", "Joshua 24:15", "1 Samuel 16:7", "2 Samuel 22:31", "1 Chronicles 16:11", "1 Chronicles 16:34", "2 Chronicles 7:14", "Nehemiah 8:10", "Job 19:25", "Psalm 1:1-2", "Psalm 4:8", "Psalm 16:8", "Psalm 16:11", "Psalm 18:2", "Psalm 19:1", "Psalm 19:14", "Psalm 23:1", "Psalm 23:4", "Psalm 27:1", "Psalm 27:14", "Psalm 28:7", "Psalm 31:24", "Psalm 32:8", "Psalm 34:8", "Psalm 34:18", "Psalm 37:4", "Psalm 37:5", "Psalm 46:1", "Psalm 46:10", "Psalm 51:10", "Psalm 55:22", "Psalm 56:3", "Psalm 62:1-2", "Psalm 73:26", "Psalm 90:12", "Psalm 91:1-2", "Psalm 91:11", "Psalm 100:4-5", "Psalm 103:2-3", "Psalm 103:12", "Psalm 118:24", "Psalm 119:11", "Psalm 119:105", "Psalm 121:1-2", "Psalm 127:1", "Psalm 133:1", "Psalm 136:1", "Psalm 139:14", "Psalm 143:8", "Psalm 145:18", "Psalm 147:3", "Psalm 150:6", "Proverbs 3:5-6", "Proverbs 3:9", "Proverbs 4:23", "Proverbs 15:1", "Proverbs 16:3", "Proverbs 16:9", "Proverbs 17:17", "Proverbs 18:10", "Proverbs 22:6", "Proverbs 27:17", "Proverbs 31:25", "Ecclesiastes 3:1", "Ecclesiastes 4:9-10", "Isaiah 9:6", "Isaiah 26:3", "Isaiah 30:15", "Isaiah 40:8", "Isaiah 40:29", "Isaiah 40:31", "Isaiah 41:10", "Isaiah 43:2", "Isaiah 43:19", "Isaiah 53:5", "Isaiah 55:8-9", "Isaiah 58:11", "Jeremiah 17:7", "Jeremiah 29:11", "Jeremiah 31:3", "Jeremiah 33:3", "Lamentations 3:22-23", "Micah 6:8", "Nahum 1:7", "Habakkuk 3:19", "Zephaniah 3:17", "Matthew 5:9", "Matthew 5:14-16", "Matthew 6:33", "Matthew 6:34", "Matthew 7:7", "Matthew 11:28-29", "Matthew 19:26", "Matthew 22:37-39", "Matthew 28:19-20", "Mark 9:23", "Mark 10:27", "Mark 12:30", "Luke 1:37", "Luke 6:31", "Luke 6:38", "John 1:5", "John 3:16", "John 8:12", "John 10:10", "John 11:25", "John 13:34-35", "John 14:6", "John 14:27", "John 15:5", "John 15:13", "John 16:33", "Acts 1:8", "Acts 2:42", "Acts 20:35", "Romans 5:8", "Romans 8:1", "Romans 8:28", "Romans 8:38-39", "Romans 10:9", "Romans 12:2", "Romans 12:12", "Romans 15:13", "1 Corinthians 10:13", "1 Corinthians 13:4-7", "1 Corinthians 13:13", "1 Corinthians 15:58", "1 Corinthians 16:14", "2 Corinthians 4:16-18", "2 Corinthians 5:7", "2 Corinthians 5:17", "2 Corinthians 12:9", "Galatians 2:20", "Galatians 5:22-23", "Galatians 6:9", "Ephesians 2:8-9", "Ephesians 2:10", "Ephesians 3:20", "Ephesians 4:2", "Ephesians 4:32", "Ephesians 6:10", "Philippians 1:6", "Philippians 2:3-4", "Philippians 4:4", "Philippians 4:6-7", "Philippians 4:8", "Philippians 4:13", "Philippians 4:19", "Colossians 3:2", "Colossians 3:12", "Colossians 3:15", "Colossians 3:23", "1 Thessalonians 5:11", "1 Thessalonians 5:16-18", "2 Thessalonians 3:3", "1 Timothy 4:12", "2 Timothy 1:7", "2 Timothy 3:16-17", "Titus 3:5", "Hebrews 4:16", "Hebrews 10:23", "Hebrews 11:1", "Hebrews 12:1-2", "Hebrews 13:5", "Hebrews 13:8", "James 1:2-3", "James 1:5", "James 1:17", "James 1:19", "James 4:8", "1 Peter 3:15", "1 Peter 5:7", "2 Peter 3:9", "1 John 1:9", "1 John 3:1", "1 John 4:7", "1 John 4:18", "1 John 4:19", "Revelation 21:4", "Revelation 3:20"];
 const SNAP_MAX = 1900000; // D1 keeps up to ~2 MB in one value
 async function putSnapshot(db, key, data) {
   if (data.length > SNAP_MAX) return false;
@@ -738,9 +740,33 @@ async function handleApi(request, env, url, ctx) {
     } catch (e) { return json({ error: 'ZIP lookup is unavailable right now — try the city name' }, 502); }
   }
 
-  // Bible Gateway's Verse of the Day (their syndication feed, shown with their credit line), cached a few hours
+  // Verse of the Day. Crossway's ESV API when a key is set (secret ESV_API_KEY), otherwise Bible Gateway's
+  // Verse of the Day feed. One verse per day, cached; each shown with its publisher's required credit.
   if (path === '/api/verse' && method === 'GET') {
-    const version = (url.searchParams.get('version') || 'KJV').replace(/[^A-Za-z0-9-]/g, '').slice(0, 12) || 'KJV';
+    const wantCrossway = url.searchParams.get('source') === 'crossway';
+    if (wantCrossway && env.ESV_API_KEY) {
+      const day = url.searchParams.get('day') || new Date().toISOString().slice(0, 10);
+      const ref = VERSE_REFS[Math.floor(Date.parse(day + 'T12:00:00Z') / 864e5) % VERSE_REFS.length];
+      const ckey = new Request(`https://verse-cache.calendora/esv/${day}`);
+      const chit = await caches.default.match(ckey).catch(() => null);
+      if (chit) return new Response(chit.body, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+      try {
+        const q = new URLSearchParams({ q: ref, 'include-passage-references': 'false', 'include-verse-numbers': 'false', 'include-first-verse-numbers': 'false', 'include-footnotes': 'false', 'include-footnote-body': 'false', 'include-headings': 'false', 'include-short-copyright': 'false', 'include-selahs': 'false', 'indent-paragraphs': '0', 'indent-poetry': 'false', 'indent-declares': '0', 'indent-psalm-doxology': '0' });
+        const r = await fetch(`https://api.esv.org/v3/passage/text/?${q}`, { headers: { Authorization: `Token ${env.ESV_API_KEY}` } });
+        if (r.status === 401 || r.status === 403) return json({ error: 'The ESV API key was not accepted', source: 'crossway' }, 502);
+        const j = r.ok ? await r.json() : null;
+        const text = j && j.passages && j.passages[0] ? j.passages[0].replace(/\s+/g, ' ').trim() : '';
+        if (text) {
+          const out = { text, reference: j.canonical || ref, version: 'ESV', link: `https://www.esv.org/${encodeURIComponent((j.canonical || ref))}/`, source: 'crossway' };
+          const res = JSON.stringify(out);
+          const put = caches.default.put(ckey, new Response(res, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=43200' } }));
+          if (ctx) ctx.waitUntil(put); else await put.catch(() => {});
+          return new Response(res, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+        }
+      } catch (e) { /* fall back to Bible Gateway below */ }
+    }
+    const keyMissing = wantCrossway && !env.ESV_API_KEY;
+    const version = wantCrossway ? 'ESV' : ((url.searchParams.get('version') || 'KJV').replace(/[^A-Za-z0-9-]/g, '').slice(0, 12) || 'KJV');
     const cache = caches.default, key = new Request(`https://verse-cache.calendora/${version}/${new Date().toISOString().slice(0, 10)}`);
     const hit = await cache.match(key).catch(() => null);
     if (hit) return new Response(hit.body, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
@@ -749,7 +775,7 @@ async function handleApi(request, env, url, ctx) {
       const r = await fetch(`https://www.biblegateway.com/votd/get/?format=json&version=${encodeURIComponent(version)}`, { headers: { 'User-Agent': 'Calendora family calendar' } });
       const j = r.ok ? await r.json() : null;
       const v = j && (j.votd || j);
-      if (v && (v.text || v.content)) out = { text: xmlText(v.text || v.content).replace(/^[“"]|[”"]$/g, ''), reference: xmlText(v.display_ref || v.reference || ''), version: xmlText(v.version || version), link: v.permalink || 'https://www.biblegateway.com/' };
+      if (v && (v.text || v.content)) out = { text: xmlText(v.text || v.content).replace(/^[“"]|[”"]$/g, ''), reference: xmlText(v.display_ref || v.reference || ''), version: xmlText(v.version || version), link: v.permalink || 'https://www.biblegateway.com/', source: 'biblegateway' };
     } catch (e) { out = null; }
     if (!out) {
       try {
@@ -757,10 +783,11 @@ async function handleApi(request, env, url, ctx) {
         const x = await r.text(), entry = (x.match(/<entry[\s>][\s\S]*?<\/entry>/i) || [''])[0];
         const text = xmlText(xmlTag(entry, 'content')).replace(/Brought to you by BibleGateway\.com.*$/i, '').replace(/^[“"]|[”"]$/g, '').trim();
         const m = /<link\b[^>]*?href=["']([^"']+)["']/i.exec(entry);
-        if (text) out = { text, reference: xmlText(xmlTag(entry, 'title')), version, link: m ? m[1].replace(/&amp;/g, '&') : 'https://www.biblegateway.com/' };
+        if (text) out = { text, reference: xmlText(xmlTag(entry, 'title')), version, link: m ? m[1].replace(/&amp;/g, '&') : 'https://www.biblegateway.com/', source: 'biblegateway' };
       } catch (e) { out = null; }
     }
     if (!out) return json({ error: 'Could not get today’s verse' }, 502);
+    if (keyMissing) out.keyMissing = true;
     const res = new Response(JSON.stringify(out), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=21600' } });
     if (ctx) ctx.waitUntil(cache.put(key, res.clone())); else await cache.put(key, res.clone()).catch(() => {});
     return new Response(JSON.stringify(out), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });

@@ -125,7 +125,7 @@
       members: [], events: [], chores: [], choreDone: {}, lists: [], meals: {}, rewards: [], redemptions: [], icalFeeds: [], recipes: [], babies: [], babyLog: [], workouts: [], supplements: [], suppTaken: {}, illnesses: [], healthLog: [],
       hidden: [], gEvents: [], gSyncedAt: null, gAcctAt: {},
       settings: {
-        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, verseEnabled: true, verseVersion: 'KJV', newsEnabled: true, newsFeeds: [{ id: 'npr', name: 'NPR News', url: 'https://feeds.npr.org/1001/rss.xml' }, { id: 'bbcworld', name: 'BBC World', url: 'https://feeds.bbci.co.uk/news/world/rss.xml' }], dinnerPresets: [], dinnerSeed: 0,
+        weekStart: 0, use24h: false, screensaverMin: 10, dayStart: 7, dayEnd: 21, weather: null, tempUnit: 'fahrenheit', showMeals: true, babyEnabled: false, babyUnits: 'imperial', healthEnabled: true, verseEnabled: true, verseVersion: 'KJV', verseSource: 'crossway', newsEnabled: true, newsFeeds: [{ id: 'npr', name: 'NPR News', url: 'https://feeds.npr.org/1001/rss.xml' }, { id: 'bbcworld', name: 'BBC World', url: 'https://feeds.bbci.co.uk/news/world/rss.xml' }], dinnerPresets: [], dinnerSeed: 0,
         google: { clientId: '', connected: false, accounts: [], calendars: {}, defaultCal: '' },
       },
       ui: { view: 'calendar', calView: 'week', listId: null, mealsTab: 'plan', textSize: 0.85 },
@@ -1424,12 +1424,13 @@
   const VERSE_VERSIONS = [['KJV', 'King James Version'], ['NKJV', 'New King James Version'], ['ESV', 'English Standard Version'], ['NIV', 'New International Version'], ['NLT', 'New Living Translation'], ['NASB', 'New American Standard Bible'], ['CSB', 'Christian Standard Bible']];
   const verse = { data: null, day: '', ver: '' };
   try { const c = JSON.parse(localStorage.getItem('calendora.verse') || 'null'); if (c && c.data) Object.assign(verse, c); } catch (e) { /* none */ }
-  async function loadVerse() {
-    const ver = state.settings.verseVersion || 'KJV', day = todayStr();
-    if (verse.data && verse.day === day && verse.ver === ver) return;
+  const verseCw = () => (state.settings.verseSource || 'crossway') === 'crossway';
+  async function loadVerse(force) {
+    const ver = verseCw() ? 'crossway' : (state.settings.verseVersion || 'KJV'), day = todayStr();
+    if (!force && verse.data && verse.day === day && verse.ver === ver) return;
     if (!cloudOn() || !cloud.signedIn) return;
     try {
-      const r = await api(`/api/verse?version=${enc(ver)}`);
+      const r = await api(verseCw() ? `/api/verse?source=crossway&day=${day}` : `/api/verse?version=${enc(ver)}`);
       if (r.ok && r.data && r.data.text) { Object.assign(verse, { data: r.data, day, ver }); try { localStorage.setItem('calendora.verse', JSON.stringify(verse)); } catch (e) { /* full */ } }
     } catch (e) { /* offline: keep yesterday's until we can refresh */ }
   }
@@ -1439,14 +1440,21 @@
     if (!state.settings.verseEnabled || !v) { box.hidden = true; return; }
     box.hidden = false;
     box.dataset.link = v.link || '';
-    box.innerHTML = `<div class="ss-ev-head">✝️ Verse of the Day</div><div class="ssv-text">${esc(v.text)}</div><div class="ssv-ref">${esc(v.reference)} <span>${esc(v.version || '')}</span></div><div class="ssv-credit">Powered by BibleGateway.com</div>`;
+    const credit = v.source === 'crossway' ? 'ESV® Bible · © Crossway · esv.org' : 'Powered by BibleGateway.com';
+    box.innerHTML = `<div class="ss-ev-head">✝️ Verse of the Day</div><div class="ssv-text">${esc(v.text)}</div><div class="ssv-ref">${esc(v.reference)} <span>${esc(v.source === 'crossway' ? 'ESV' : (v.version || ''))}</span></div><div class="ssv-credit">${credit}</div>`;
   }
   function newsSection() {
+    if (state.settings.verseEnabled && !verse.tried) { verse.tried = true; setTimeout(() => loadVerse().then(() => { if (state.ui.view === 'settings') renderView(); }), 0); }
     const fs = newsFeeds(), st = Object.fromEntries((news.feeds || []).map(f => [f.id, f]));
     return `<section class="card">
       <h3>Verse & news on the idle screen</h3>
       <label class="switch"><input type="checkbox" data-setting-bool="verseEnabled" ${state.settings.verseEnabled ? 'checked' : ''}><span class="track"></span><span>Show the Verse of the Day</span></label>
-      ${state.settings.verseEnabled ? `<label class="field inline"><span>Bible translation</span><select data-setting="verseVersion">${VERSE_VERSIONS.map(([k, n]) => `<option value="${k}" ${(state.settings.verseVersion || 'KJV') === k ? 'selected' : ''}>${n} (${k})</option>`).join('')}</select></label><p class="muted small">From Bible Gateway's Verse of the Day. It stays on the idle screen all day and changes each morning.</p>` : ''}
+      ${state.settings.verseEnabled ? `
+        <label class="field inline"><span>Source</span><select data-setting="verseSource">${[['crossway', 'ESV — Crossway (esv.org)'], ['biblegateway', 'Bible Gateway — choose a translation']].map(([k, n]) => `<option value="${k}" ${(state.settings.verseSource || 'crossway') === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+        ${verseCw() ? `${verse.data && verse.data.keyMissing ? '<p class="warn-text small">The Crossway ESV key hasn’t been added yet, so Bible Gateway’s ESV verse is shown for now.</p>' : ''}
+          <p class="muted small">A new passage each day, text from Crossway's ESV API. It stays on the idle screen all day.</p>
+          <p class="muted small esv-notice">Scripture quotations are from the ESV® Bible (The Holy Bible, English Standard Version®), © 2001 by Crossway, a publishing ministry of Good News Publishers. Used by permission. All rights reserved. <a href="https://www.esv.org" target="_blank" rel="noopener">www.esv.org</a></p>`
+        : `<label class="field inline"><span>Bible translation</span><select data-setting="verseVersion">${VERSE_VERSIONS.map(([k, n]) => `<option value="${k}" ${(state.settings.verseVersion || 'KJV') === k ? 'selected' : ''}>${n} (${k})</option>`).join('')}</select></label><p class="muted small">From Bible Gateway's Verse of the Day. It stays on the idle screen all day and changes each morning.</p>`}` : ''}
       <hr class="soft">
       <label class="switch"><input type="checkbox" data-setting-bool="newsEnabled" ${state.settings.newsEnabled ? 'checked' : ''}><span class="track"></span><span>Show headlines on the idle screen</span></label>
       ${state.settings.newsEnabled ? `
@@ -3265,6 +3273,7 @@
     if (state.settings.dayEnd <= state.settings.dayStart) state.settings.dayEnd = state.settings.dayStart + 1;
     save();
     if (el.dataset.setting === 'tempUnit') fetchWeather();
+    if (el.dataset.setting === 'verseSource' || el.dataset.setting === 'verseVersion') loadVerse(true).then(() => { showVerse(); if (state.ui.view === 'settings') renderView(); });
     render();
   });
 
