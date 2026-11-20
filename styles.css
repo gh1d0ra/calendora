@@ -854,3 +854,18 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
 .ss-ev.next em { margin-left: auto; }
 
 @media (max-width: 700px) { .ssv-text { font-size: 17px; } .ss-verse { padding: 12px 14px; } }
+/* weather card on the idle screen, above the events */
+.ss-wx { background: rgba(0, 0, 0, .22); backdrop-filter: blur(12px); border-radius: 18px; padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; text-shadow: 0 1px 8px rgba(0, 0, 0, .3); }
+.ss-wx:empty { display: none; }
+.sw-now { display: flex; align-items: center; gap: 12px; }
+.sw-ic { font-size: 44px; line-height: 1; }
+.sw-temp { font-size: 46px; font-weight: 900; letter-spacing: -.02em; }
+.sw-meta { display: flex; flex-direction: column; font-weight: 700; font-size: 15px; }
+.sw-meta b { font-size: 17px; }
+.sw-meta small { opacity: .7; font-size: 12px; }
+.sw-days { display: flex; gap: 14px; }
+.sw-day { display: flex; flex-direction: column; align-items: center; font-weight: 800; font-size: 14px; gap: 2px; }
+.sw-day em { font-style: normal; opacity: .65; }
+.sw-dic { font-size: 22px; }
+.sw-hint { font-weight: 700; font-size: 15px; opacity: .85; }
+@media (max-width: 700px) { .sw-ic { font-size: 34px; } .sw-temp { font-size: 36px; } .sw-days { gap: 10px; } }
