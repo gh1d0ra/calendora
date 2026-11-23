@@ -12,7 +12,10 @@ const PBKDF2_ITERATIONS = 100000;       // Workers' maximum for PBKDF2
 const MAX_FAILS = 10;                   // failed passcode attempts …
 const FAIL_WINDOW = 15 * 60;            // … per 15 minutes per IP
 const MAX_BOARD_BYTES = 1900000;        // stay under D1's 2 MB value limit
-const BOARD_ID = 'family';
+const BOARD_ID = 'family';               // the first family's id (its data predates multi-family support)
+const MAX_FAMILIES_PER_IP_DAY = 3;      // new families per network per day
+const MAX_IMAGES_PER_FAMILY = 400;
+const INVITE_DAYS = 14;
 const MAX_IMAGE_BYTES = 1800000;        // recipe photos are resized in the browser first
 const VISION_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 
@@ -55,9 +58,34 @@ async function ensureSchema(db) {
     db.prepare('CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL)'),
     // Last good copy of each outside calendar, so every device can show it when Google or Apple can't be reached.
     db.prepare('CREATE TABLE IF NOT EXISTS snapshots (key TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at INTEGER NOT NULL)'),
+    // Families, the Google accounts in them, and invite links
+    db.prepare('CREATE TABLE IF NOT EXISTS families (id TEXT PRIMARY KEY, name TEXT NOT NULL, code TEXT UNIQUE, passcode TEXT, epoch INTEGER NOT NULL DEFAULT 1, anylist TEXT, created_at INTEGER NOT NULL)'),
+    db.prepare('CREATE TABLE IF NOT EXISTS accounts (sub TEXT PRIMARY KEY, email TEXT, name TEXT, picture TEXT, family_id TEXT, role TEXT, created_at INTEGER NOT NULL, last_seen INTEGER)'),
+    db.prepare('CREATE INDEX IF NOT EXISTS accounts_family ON accounts (family_id)'),
+    db.prepare('CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, family_id TEXT NOT NULL, created_by TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, max_uses INTEGER NOT NULL DEFAULT 20)'),
   ]);
+  // photos belong to a family
+  const cols = await db.prepare('PRAGMA table_info(images)').all();
+  if (!(cols.results || []).some(c => c.name === 'family_id')) await db.prepare(`ALTER TABLE images ADD COLUMN family_id TEXT NOT NULL DEFAULT '${BOARD_ID}'`).run();
+  // The board that existed before families becomes family #1, keeping its passcode and signed-in devices.
+  if (!(await db.prepare('SELECT 1 FROM families WHERE id = ?').bind(BOARD_ID).first())) {
+    const hadBoard = await db.prepare('SELECT 1 FROM board WHERE id = ?').bind(BOARD_ID).first();
+    const pass = await getConfig(db, 'passcode');
+    if (hadBoard || pass) {
+      await db.prepare('INSERT OR IGNORE INTO families (id, name, code, passcode, epoch, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(BOARD_ID, 'Our family', await newFamilyCode(db), pass, Number((await getConfig(db, 'session_epoch')) || 1), Date.now()).run();
+    }
+  }
   schemaReady = true;
 }
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O or 1/I
+function randomCode(n) { const b = crypto.getRandomValues(new Uint8Array(n)); return [...b].map(x => CODE_CHARS[x % CODE_CHARS.length]).join(''); }
+async function newFamilyCode(db) {
+  for (let i = 0; i < 10; i++) { const c = randomCode(6); if (!(await db.prepare('SELECT 1 FROM families WHERE code = ?').bind(c).first())) return c; }
+  return randomCode(8);
+}
+const famKey = (fid, k) => (fid === BOARD_ID ? k : `${fid}:${k}`); // family #1 keeps its existing config keys
+async function getFamily(db, fid) { return fid ? db.prepare('SELECT * FROM families WHERE id = ?').bind(fid).first() : null; }
 async function getConfig(db, key) {
   const row = await db.prepare('SELECT value FROM config WHERE key = ?').bind(key).first();
   return row ? row.value : null;
@@ -92,26 +120,82 @@ async function signingKey(db) {
   }
   return crypto.subtle.importKey('raw', fromB64u(raw), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
 }
-async function sessionEpoch(db) { return (await getConfig(db, 'session_epoch')) || '1'; }
-async function makeSessionCookie(db) {
-  const payload = `${await sessionEpoch(db)}:${Math.floor(Date.now() / 1000) + SESSION_TTL}`;
+// Cookie payload: 2|familyId|googleSub|epoch|expires. A Google account has a sub; a tablet signed in with the
+// family passcode has none. A Google account that hasn't created or joined a family yet has no familyId.
+// Cookies from before families ("epoch:expires") belong to family #1's devices.
+async function makeSessionCookie(db, fid, sub = '', epoch = 1) {
+  const payload = `2|${fid || ''}|${sub || ''}|${epoch}|${Math.floor(Date.now() / 1000) + SESSION_TTL}`;
   const sig = await crypto.subtle.sign('HMAC', await signingKey(db), te.encode(payload));
   const token = `${b64u(te.encode(payload))}.${b64u(sig)}`;
   return `${SESSION_COOKIE}=${token}; Path=/; Max-Age=${SESSION_TTL}; HttpOnly; Secure; SameSite=Lax`;
 }
 const clearCookie = `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
-async function isSignedIn(request, db) {
+async function readSession(request, db) {
   const m = (request.headers.get('Cookie') || '').match(new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([^;]+)`));
-  if (!m) return false;
+  if (!m) return null;
   const [p, s] = m[1].split('.');
-  if (!p || !s) return false;
+  if (!p || !s) return null;
   let payload;
-  try { payload = td.decode(fromB64u(p)); } catch (e) { return false; }
+  try { payload = td.decode(fromB64u(p)); } catch (e) { return null; }
   let ok = false;
-  try { ok = await crypto.subtle.verify('HMAC', await signingKey(db), fromB64u(s), te.encode(payload)); } catch (e) { return false; }
-  if (!ok) return false;
-  const [epoch, exp] = payload.split(':');
-  return Number(exp) > Date.now() / 1000 && epoch === (await sessionEpoch(db));
+  try { ok = await crypto.subtle.verify('HMAC', await signingKey(db), fromB64u(s), te.encode(payload)); } catch (e) { return null; }
+  if (!ok) return null;
+  let fid, sub, epoch, exp;
+  if (payload.startsWith('2|')) [, fid, sub, epoch, exp] = payload.split('|');
+  else { [epoch, exp] = payload.split(':'); fid = BOARD_ID; sub = ''; }
+  if (!(Number(exp) > Date.now() / 1000)) return null;
+  const account = sub ? await db.prepare('SELECT * FROM accounts WHERE sub = ?').bind(sub).first() : null;
+  if (sub && !account) return null;
+  if (sub && (account.family_id || '') !== (fid || '')) return { sub, account, fid: '', family: null, stale: true }; // removed or moved: sign in again
+  const family = fid ? await getFamily(db, fid) : null;
+  if (fid && !family) return null;
+  if (family && String(family.epoch) !== String(epoch)) return null; // "sign out all devices" was used
+  return { fid: fid || '', sub: sub || '', account, family, device: !sub };
+}
+const isManager = sess => !!(sess && sess.account && (sess.account.role === 'owner' || sess.account.role === 'admin'));
+
+// ------------------------------------------------------------------ Google sign-in (ID token check)
+let googleKeys = null, googleKeysAt = 0;
+async function googleKey(kid) {
+  if (!googleKeys || Date.now() - googleKeysAt > 3600e3 || !googleKeys.find(k => k.kid === kid)) {
+    const r = await fetch('https://www.googleapis.com/oauth2/v3/certs');
+    if (!r.ok) throw new Error('Google keys unavailable');
+    googleKeys = (await r.json()).keys || []; googleKeysAt = Date.now();
+  }
+  return googleKeys.find(k => k.kid === kid) || null;
+}
+async function verifyGoogleToken(token, clientId) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3 || !clientId) return null;
+  let head, body;
+  try { head = JSON.parse(td.decode(fromB64u(parts[0]))); body = JSON.parse(td.decode(fromB64u(parts[1]))); } catch (e) { return null; }
+  if (head.alg !== 'RS256') return null;
+  const jwk = await googleKey(head.kid);
+  if (!jwk) return null;
+  const key = await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+  const ok = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, fromB64u(parts[2]), te.encode(`${parts[0]}.${parts[1]}`));
+  if (!ok) return null;
+  const now = Date.now() / 1000;
+  if (body.aud !== clientId || !['accounts.google.com', 'https://accounts.google.com'].includes(body.iss) || !(body.exp > now) || !body.sub) return null;
+  if (body.email && body.email_verified === false) return null;
+  return body;
+}
+
+// ------------------------------------------------------------------ per-family secrets (AnyList sign-in), AES-GCM
+async function dataKey(db, env) {
+  let raw = env.DATA_KEY || await getConfig(db, 'data_key');
+  if (!raw) { await db.prepare('INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)').bind('data_key', b64u(crypto.getRandomValues(new Uint8Array(32)))).run(); raw = await getConfig(db, 'data_key'); }
+  const bytes = /^[A-Za-z0-9_-]{43}$/.test(raw) ? fromB64u(raw) : new Uint8Array(await crypto.subtle.digest('SHA-256', te.encode(raw)));
+  return crypto.subtle.importKey('raw', bytes, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+async function sealJson(db, env, obj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await dataKey(db, env), te.encode(JSON.stringify(obj)));
+  return `g1.${b64u(iv)}.${b64u(ct)}`;
+}
+async function openJson(db, env, sealed) {
+  if (!sealed) return null;
+  try { const [, iv, ct] = sealed.split('.'); return JSON.parse(td.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64u(iv) }, await dataKey(db, env), fromB64u(ct)))); } catch (e) { return null; }
 }
 
 // ------------------------------------------------------------------ rate limiting
@@ -292,9 +376,17 @@ function alEncodeOps(ops, userId) { // PBListOperationList
   return list.finish();
 }
 
-async function alSaveTokens(db, t) { await setConfig(db, 'anylist_tokens', JSON.stringify(t)); }
-async function alLogin(env, t) {
-  const f = new FormData(); f.append('email', env.ANYLIST_EMAIL); f.append('password', env.ANYLIST_PASSWORD);
+// Each family's own AnyList sign-in: saved (encrypted) in Settings; family #1 can also use the Cloudflare secrets.
+async function anylistCreds(db, env, fid) {
+  const fam = await getFamily(db, fid);
+  const c = fam ? await openJson(db, env, fam.anylist) : null;
+  if (c && c.email && c.password) return c;
+  if (fid === BOARD_ID && env.ANYLIST_EMAIL && env.ANYLIST_PASSWORD) return { email: env.ANYLIST_EMAIL, password: env.ANYLIST_PASSWORD, fromEnv: true };
+  return null;
+}
+async function alSaveTokens(db, fid, t) { await setConfig(db, famKey(fid, 'anylist_tokens'), JSON.stringify(t)); }
+async function alLogin(creds, t) {
+  const f = new FormData(); f.append('email', creds.email); f.append('password', creds.password);
   const r = await fetch(`${AL_BASE}/auth/token`, { method: 'POST', body: f, headers: { 'X-AnyLeaf-API-Version': '3' } });
   if (r.status === 400 || r.status === 401) throw new ALError('AnyList did not accept the email or password', 'auth');
   if (!r.ok) throw new ALError(`AnyList sign-in failed (${r.status})`);
@@ -302,17 +394,17 @@ async function alLogin(env, t) {
   t.access = j.access_token; t.refresh = j.refresh_token;
   try { const p = JSON.parse(td8.decode(fromB64u(t.access.split('.')[1]))); t.userId = p.sub || p.user_id || p.uid || ''; } catch (e) { t.userId = t.userId || ''; }
 }
-async function alRefresh(env, t) {
+async function alRefresh(creds, t) {
   const f = new FormData(); f.append('refresh_token', t.refresh || '');
   const r = await fetch(`${AL_BASE}/auth/token/refresh`, { method: 'POST', body: f, headers: { 'X-AnyLeaf-API-Version': '3' } });
-  if (r.ok) { const j = await r.json(); t.access = j.access_token; t.refresh = j.refresh_token; } else await alLogin(env, t);
+  if (r.ok) { const j = await r.json(); t.access = j.access_token; t.refresh = j.refresh_token; } else await alLogin(creds, t);
 }
-async function alTokens(db, env) {
+async function alTokens(db, fid, creds) {
   let t = {};
-  try { t = JSON.parse((await getConfig(db, 'anylist_tokens')) || '{}') || {}; } catch (e) { t = {}; }
-  if (t.email !== env.ANYLIST_EMAIL) t = { email: env.ANYLIST_EMAIL }; // credentials changed
+  try { t = JSON.parse((await getConfig(db, famKey(fid, 'anylist_tokens'))) || '{}') || {}; } catch (e) { t = {}; }
+  if (t.email !== creds.email) t = { email: creds.email }; // credentials changed
   if (!t.clientId) t.clientId = alId();
-  if (!t.access) { await alLogin(env, t); await alSaveTokens(db, t); }
+  if (!t.access) { await alLogin(creds, t); await alSaveTokens(db, fid, t); }
   return t;
 }
 // multipart/form-data with one binary field, shaped like the official clients send it (no filename)
@@ -324,52 +416,54 @@ function alForm(name, bin) {
   body.set(head, 0); body.set(bin, head.length); body.set(tail, head.length + bin.length);
   return { body, type: `multipart/form-data; boundary=${boundary}` };
 }
-async function alPost(db, env, t, path, makeBody) {
+async function alPost(db, fid, creds, t, path, makeBody) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const b = makeBody ? makeBody() : null;
     const headers = { 'X-AnyLeaf-API-Version': '3', 'X-AnyLeaf-Client-Identifier': t.clientId, authorization: `Bearer ${t.access}` };
     if (b) headers['Content-Type'] = b.type;
     const r = await fetch(`${AL_BASE}/${path}`, { method: 'POST', body: b ? b.body : undefined, headers });
-    if (r.status === 401 && attempt === 0) { await alRefresh(env, t); await alSaveTokens(db, t); continue; }
+    if (r.status === 401 && attempt === 0) { await alRefresh(creds, t); await alSaveTokens(db, fid, t); continue; }
     if (!r.ok) throw new ALError(`AnyList answered ${r.status}`);
     return new Uint8Array(await r.arrayBuffer());
   }
   throw new ALError('AnyList sign-in expired');
 }
 
-async function anylistSync(env, { force = false } = {}) {
+async function anylistSync(env, fid, { force = false } = {}) {
   const db = env.DB;
   await ensureSchema(db);
-  if (!env.ANYLIST_EMAIL || !env.ANYLIST_PASSWORD) return { skipped: 'not-configured' };
-  const row = await db.prepare('SELECT data, version FROM board WHERE id = ?').bind(BOARD_ID).first();
+  const creds = await anylistCreds(db, env, fid);
+  if (!creds) return { skipped: 'not-configured' };
+  const K = k => famKey(fid, k);
+  const row = await db.prepare('SELECT data, version FROM board WHERE id = ?').bind(fid).first();
   if (!row) return { skipped: 'no-board' };
   let board;
   try { board = JSON.parse(row.data); } catch (e) { return { skipped: 'bad-board' }; }
   const cfg = (board.settings && board.settings.anylist) || {};
   if (!cfg.on) return { skipped: 'off' };
   const now = Date.now();
-  if (now - Number((await getConfig(db, 'anylist_lock')) || 0) < 60000) return { skipped: 'busy' };
-  if (!force && now - Number((await getConfig(db, 'anylist_last')) || 0) < 8000) return { skipped: 'recent' };
-  await setConfig(db, 'anylist_lock', String(now));
+  if (now - Number((await getConfig(db, K('anylist_lock'))) || 0) < 60000) return { skipped: 'busy' };
+  if (!force && now - Number((await getConfig(db, K('anylist_last'))) || 0) < 8000) return { skipped: 'recent' };
+  await setConfig(db, K('anylist_lock'), String(now));
   let status;
   try {
-    status = await anylistSyncOnce(db, env, board, row.version, cfg);
+    status = await anylistSyncOnce(db, fid, creds, board, row.version, cfg);
   } catch (e) {
     if (e.code === 'retry') status = null;
     else status = { ok: false, error: e.message || 'AnyList sync failed', at: Date.now() };
   } finally {
-    await setConfig(db, 'anylist_lock', '0');
-    await setConfig(db, 'anylist_last', String(Date.now()));
+    await setConfig(db, K('anylist_lock'), '0');
+    await setConfig(db, K('anylist_last'), String(Date.now()));
   }
-  if (status) await setConfig(db, 'anylist_status', JSON.stringify(status));
+  if (status) await setConfig(db, K('anylist_status'), JSON.stringify(status));
   return status || { skipped: 'retry' };
 }
 
-async function anylistSyncOnce(db, env, board, version, cfg) {
+async function anylistSyncOnce(db, fid, creds, board, version, cfg) {
   if (!Array.isArray(board.lists)) board.lists = [];
   const lists = board.lists;
-  const t = await alTokens(db, env);
-  const alists = alDecodeLists(await alPost(db, env, t, 'data/user-data/get'));
+  const t = await alTokens(db, fid, creds);
+  const alists = alDecodeLists(await alPost(db, fid, creds, t, 'data/user-data/get'));
   const wantName = String(cfg.listName || 'Groceries').trim().toLowerCase();
   const al = alists.find(l => (l.name || '').trim().toLowerCase() === wantName);
   if (!al) throw new ALError(`No AnyList list called “${cfg.listName || 'Groceries'}”. Your lists: ${alists.map(l => l.name).join(', ') || 'none'}`);
@@ -380,7 +474,7 @@ async function anylistSyncOnce(db, env, board, version, cfg) {
   cl.items = Array.isArray(cl.items) ? cl.items : [];
 
   let map = null;
-  try { map = JSON.parse((await getConfig(db, 'anylist_map')) || 'null'); } catch (e) { map = null; }
+  try { map = JSON.parse((await getConfig(db, famKey(fid, 'anylist_map'))) || 'null'); } catch (e) { map = null; }
   if (!map || map.cl !== cl.id || map.al !== al.id) map = { cl: cl.id, al: al.id, links: [], ignored: [] };
   const cById = new Map(cl.items.map(i => [i.id, i]));
   const aById = new Map(al.items.map(i => [i.id, i]));
@@ -439,15 +533,15 @@ async function anylistSyncOnce(db, env, board, version, cfg) {
 
   if (changed) {
     const res = await db.prepare('UPDATE board SET data = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?')
-      .bind(JSON.stringify(board), Date.now(), BOARD_ID, version).run();
+      .bind(JSON.stringify(board), Date.now(), fid, version).run();
     if (!res.meta || res.meta.changes !== 1) throw new ALError('board changed', 'retry');
   }
   if (ops.length) {
     const bin = alEncodeOps(ops); // like the official clients, no user id
-    await alPost(db, env, t, 'data/shopping-lists/update', () => alForm('operations', bin));
+    await alPost(db, fid, creds, t, 'data/shopping-lists/update', () => alForm('operations', bin));
   }
   const validA = new Set(al.items.map(a => a.id));
-  await setConfig(db, 'anylist_map', JSON.stringify({ cl: cl.id, al: al.id, links, ignored: [...ignored].filter(id => validA.has(id)) }));
+  await setConfig(db, famKey(fid, 'anylist_map'), JSON.stringify({ cl: cl.id, al: al.id, links, ignored: [...ignored].filter(id => validA.has(id)) }));
   return { ok: true, at: Date.now(), listName: al.name, calendoraList: cl.name, pushed: ops.length, pulled, items: links.length };
 }
 
@@ -504,6 +598,7 @@ async function readFeed(url, ctx) {
 }
 // One well-known passage per day for the ESV Verse of the Day (references only; text comes from Crossway's API)
 const VERSE_REFS = ["Genesis 1:1", "Genesis 50:20", "Exodus 14:14", "Exodus 15:2", "Numbers 6:24-26", "Deuteronomy 6:5", "Deuteronomy 31:6", "Deuteronomy 31:8", "Joshua 1:9", "Joshua 24:15", "1 Samuel 16:7", "2 Samuel 22:31", "1 Chronicles 16:11", "1 Chronicles 16:34", "2 Chronicles 7:14", "Nehemiah 8:10", "Job 19:25", "Psalm 1:1-2", "Psalm 4:8", "Psalm 16:8", "Psalm 16:11", "Psalm 18:2", "Psalm 19:1", "Psalm 19:14", "Psalm 23:1", "Psalm 23:4", "Psalm 27:1", "Psalm 27:14", "Psalm 28:7", "Psalm 31:24", "Psalm 32:8", "Psalm 34:8", "Psalm 34:18", "Psalm 37:4", "Psalm 37:5", "Psalm 46:1", "Psalm 46:10", "Psalm 51:10", "Psalm 55:22", "Psalm 56:3", "Psalm 62:1-2", "Psalm 73:26", "Psalm 90:12", "Psalm 91:1-2", "Psalm 91:11", "Psalm 100:4-5", "Psalm 103:2-3", "Psalm 103:12", "Psalm 118:24", "Psalm 119:11", "Psalm 119:105", "Psalm 121:1-2", "Psalm 127:1", "Psalm 133:1", "Psalm 136:1", "Psalm 139:14", "Psalm 143:8", "Psalm 145:18", "Psalm 147:3", "Psalm 150:6", "Proverbs 3:5-6", "Proverbs 3:9", "Proverbs 4:23", "Proverbs 15:1", "Proverbs 16:3", "Proverbs 16:9", "Proverbs 17:17", "Proverbs 18:10", "Proverbs 22:6", "Proverbs 27:17", "Proverbs 31:25", "Ecclesiastes 3:1", "Ecclesiastes 4:9-10", "Isaiah 9:6", "Isaiah 26:3", "Isaiah 30:15", "Isaiah 40:8", "Isaiah 40:29", "Isaiah 40:31", "Isaiah 41:10", "Isaiah 43:2", "Isaiah 43:19", "Isaiah 53:5", "Isaiah 55:8-9", "Isaiah 58:11", "Jeremiah 17:7", "Jeremiah 29:11", "Jeremiah 31:3", "Jeremiah 33:3", "Lamentations 3:22-23", "Micah 6:8", "Nahum 1:7", "Habakkuk 3:19", "Zephaniah 3:17", "Matthew 5:9", "Matthew 5:14-16", "Matthew 6:33", "Matthew 6:34", "Matthew 7:7", "Matthew 11:28-29", "Matthew 19:26", "Matthew 22:37-39", "Matthew 28:19-20", "Mark 9:23", "Mark 10:27", "Mark 12:30", "Luke 1:37", "Luke 6:31", "Luke 6:38", "John 1:5", "John 3:16", "John 8:12", "John 10:10", "John 11:25", "John 13:34-35", "John 14:6", "John 14:27", "John 15:5", "John 15:13", "John 16:33", "Acts 1:8", "Acts 2:42", "Acts 20:35", "Romans 5:8", "Romans 8:1", "Romans 8:28", "Romans 8:38-39", "Romans 10:9", "Romans 12:2", "Romans 12:12", "Romans 15:13", "1 Corinthians 10:13", "1 Corinthians 13:4-7", "1 Corinthians 13:13", "1 Corinthians 15:58", "1 Corinthians 16:14", "2 Corinthians 4:16-18", "2 Corinthians 5:7", "2 Corinthians 5:17", "2 Corinthians 12:9", "Galatians 2:20", "Galatians 5:22-23", "Galatians 6:9", "Ephesians 2:8-9", "Ephesians 2:10", "Ephesians 3:20", "Ephesians 4:2", "Ephesians 4:32", "Ephesians 6:10", "Philippians 1:6", "Philippians 2:3-4", "Philippians 4:4", "Philippians 4:6-7", "Philippians 4:8", "Philippians 4:13", "Philippians 4:19", "Colossians 3:2", "Colossians 3:12", "Colossians 3:15", "Colossians 3:23", "1 Thessalonians 5:11", "1 Thessalonians 5:16-18", "2 Thessalonians 3:3", "1 Timothy 4:12", "2 Timothy 1:7", "2 Timothy 3:16-17", "Titus 3:5", "Hebrews 4:16", "Hebrews 10:23", "Hebrews 11:1", "Hebrews 12:1-2", "Hebrews 13:5", "Hebrews 13:8", "James 1:2-3", "James 1:5", "James 1:17", "James 1:19", "James 4:8", "1 Peter 3:15", "1 Peter 5:7", "2 Peter 3:9", "1 John 1:9", "1 John 3:1", "1 John 4:7", "1 John 4:18", "1 John 4:19", "Revelation 21:4", "Revelation 3:20"];
+const gSnapPrefix = fid => (fid === BOARD_ID ? 'google:' : `g:${fid}:`); // family #1 keeps its existing copies
 const SNAP_MAX = 1900000; // D1 keeps up to ~2 MB in one value
 async function putSnapshot(db, key, data) {
   if (data.length > SNAP_MAX) return false;
@@ -522,59 +617,187 @@ async function handleApi(request, env, url, ctx) {
   const path = url.pathname.replace(/\/+$/, '');
   const method = request.method;
 
+  const origin = `${url.protocol}//${url.host}`;
+  const clientId = env.GOOGLE_CLIENT_ID || '';
+  const ownerEmails = String(env.OWNER_EMAILS || '').toLowerCase().split(/[\s,]+/).filter(Boolean);
+  const familyOut = f => (f ? { id: f.id, name: f.name, code: f.code, hasPasscode: !!f.passcode } : null);
+  const accountOut = a => (a ? { email: a.email, name: a.name, picture: a.picture, role: a.role } : null);
+  const signIn = async (fid, sub) => {
+    const fam = fid ? await getFamily(db, fid) : null;
+    return makeSessionCookie(db, fid, sub, fam ? fam.epoch : 0);
+  };
+  const joinFamily = async (acc, fid, role) => {
+    await db.prepare('UPDATE accounts SET family_id = ?, role = ? WHERE sub = ?').bind(fid, role, acc.sub).run();
+    acc.family_id = fid; acc.role = role;
+  };
+  const useInvite = async (acc, code) => {
+    const inv = code ? await db.prepare('SELECT * FROM invites WHERE code = ?').bind(String(code).trim().toUpperCase()).first() : null;
+    if (!inv || inv.expires_at < Date.now() || inv.uses >= inv.max_uses || !(await getFamily(db, inv.family_id))) return { error: 'That invite has expired or was already used up — ask for a new one' };
+    if (acc.family_id && acc.family_id !== inv.family_id) return { error: 'You’re already in another family. Leave it in Settings first, then open the invite again.' };
+    if (acc.family_id !== inv.family_id) { await joinFamily(acc, inv.family_id, 'member'); await db.prepare('UPDATE invites SET uses = uses + 1 WHERE code = ?').bind(inv.code).run(); }
+    return { ok: true };
+  };
+
   if (path === '/api/session' && method === 'GET') {
-    const configured = !!(await getConfig(db, 'passcode'));
-    return json({ configured, signedIn: configured && (await isSignedIn(request, db)) });
+    const sess = await readSession(request, db);
+    return json({
+      configured: true, multi: true, googleClientId: clientId,
+      signedIn: !!(sess && sess.fid), needsFamily: !!(sess && sess.sub && !sess.fid),
+      family: familyOut(sess && sess.family), account: accountOut(sess && sess.account), device: !!(sess && sess.device),
+    });
   }
 
-  if (path === '/api/setup' && method === 'POST') {
+  if (path === '/api/setup' && method === 'POST') return json({ error: 'Sign in with Google to create a family' }, 410);
+
+  // Sign in with Google: verify the ID token, then sign in to the account's family (joining by invite if given).
+  if (path === '/api/auth/google' && method === 'POST') {
+    const ip = clientIp(request);
+    if (await tooManyFails(db, ip)) return json({ error: 'Too many tries — wait 15 minutes and try again' }, 429);
     const body = await readJson(request);
-    if (!body || !validPasscode(body.passcode)) return json({ error: 'Choose a passcode of at least 4 characters' }, 400);
-    const record = await makePasscodeRecord(body.passcode);
-    const res = await db.prepare('INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)').bind('passcode', record).run();
-    if (!res.meta || res.meta.changes !== 1) return json({ error: 'A family passcode already exists' }, 409);
-    return json({ ok: true }, 200, { 'Set-Cookie': await makeSessionCookie(db) });
+    let g = null;
+    try { g = await verifyGoogleToken(body && body.credential, clientId); } catch (e) { return json({ error: 'Google sign-in is unavailable right now — try again shortly' }, 502); }
+    if (!g) { await recordFail(db, ip); return json({ error: 'Google sign-in could not be confirmed — try again' }, 401); }
+    const now = Date.now();
+    await db.prepare(`INSERT INTO accounts (sub, email, name, picture, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(sub) DO UPDATE SET email = excluded.email, name = excluded.name, picture = excluded.picture, last_seen = excluded.last_seen`)
+      .bind(g.sub, g.email || '', g.name || g.email || '', g.picture || '', now, now).run();
+    const acc = await db.prepare('SELECT * FROM accounts WHERE sub = ?').bind(g.sub).first();
+    let note = '';
+    if (body && body.invite) { const r = await useInvite(acc, body.invite); if (r.error) note = r.error; }
+    // the people who run this Calendora (OWNER_EMAILS) own family #1
+    if (!acc.family_id && ownerEmails.includes(String(acc.email).toLowerCase()) && (await getFamily(db, BOARD_ID))) await joinFamily(acc, BOARD_ID, 'owner');
+    return json({ ok: true, needsFamily: !acc.family_id, note }, 200, { 'Set-Cookie': await signIn(acc.family_id || '', acc.sub) });
   }
 
+  // Tablet sign-in with a family code + passcode (family #1's old screen sends only the passcode)
   if (path === '/api/login' && method === 'POST') {
     const ip = clientIp(request);
     if (await tooManyFails(db, ip)) return json({ error: 'Too many tries — wait 15 minutes and try again' }, 429);
     const body = await readJson(request);
-    const record = await getConfig(db, 'passcode');
-    if (!record) return json({ error: 'No family passcode yet' }, 409);
-    if (!body || typeof body.passcode !== 'string' || !(await checkPasscode(record, body.passcode))) {
+    const code = String((body && body.family) || '').trim().toUpperCase();
+    const fam = code ? await db.prepare('SELECT * FROM families WHERE code = ?').bind(code).first() : await getFamily(db, BOARD_ID);
+    if (!fam || !fam.passcode || !body || typeof body.passcode !== 'string' || !(await checkPasscode(fam.passcode, body.passcode))) {
       await recordFail(db, ip);
-      return json({ error: 'That passcode is not right' }, 401);
+      return json({ error: code || !body || !body.family ? 'That family code or passcode is not right' : 'That passcode is not right' }, 401);
     }
     await clearFails(db, ip);
-    return json({ ok: true }, 200, { 'Set-Cookie': await makeSessionCookie(db) });
+    return json({ ok: true }, 200, { 'Set-Cookie': await signIn(fam.id, '') });
   }
 
   if (path === '/api/logout' && method === 'POST') return json({ ok: true }, 200, { 'Set-Cookie': clearCookie });
 
-  // everything below needs a signed-in device
-  if (!(await isSignedIn(request, db))) return json({ error: 'Not signed in' }, 401);
+  const sess = await readSession(request, db);
+  if (!sess) return json({ error: 'Not signed in' }, 401);
 
-  if (path === '/api/logout-all' && method === 'POST') {
-    await setConfig(db, 'session_epoch', String(Number(await sessionEpoch(db)) + 1));
-    return json({ ok: true }, 200, { 'Set-Cookie': await makeSessionCookie(db) }); // keep this device signed in
+  // Google account without a family yet: create one, or join with an invite
+  if (path === '/api/family/create' && method === 'POST') {
+    if (!sess.account) return json({ error: 'Sign in with Google to create a family' }, 403);
+    if (sess.account.family_id) return json({ error: 'You’re already in a family' }, 409);
+    const ip = `new-family:${clientIp(request)}`;
+    const row = await db.prepare('SELECT count, window_start FROM login_attempts WHERE ip = ?').bind(ip).first();
+    if (row && Date.now() / 1000 - row.window_start < 86400 && row.count >= MAX_FAMILIES_PER_IP_DAY) return json({ error: 'Too many new families from this network today — try again tomorrow' }, 429);
+    const body = await readJson(request);
+    const name = String((body && body.name) || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    if (!name) return json({ error: 'Give your family a name' }, 400);
+    const fid = `f${b64u(crypto.getRandomValues(new Uint8Array(9)))}`;
+    await db.prepare('INSERT INTO families (id, name, code, epoch, created_at) VALUES (?, ?, ?, 1, ?)').bind(fid, name, await newFamilyCode(db), Date.now()).run();
+    await joinFamily(sess.account, fid, 'owner');
+    const now = Math.floor(Date.now() / 1000);
+    await db.prepare(`INSERT INTO login_attempts (ip, count, window_start) VALUES (?, 1, ?) ON CONFLICT(ip) DO UPDATE SET
+      count = CASE WHEN ? - window_start > 86400 THEN 1 ELSE count + 1 END, window_start = CASE WHEN ? - window_start > 86400 THEN ? ELSE window_start END`).bind(ip, now, now, now, now).run();
+    return json({ ok: true }, 200, { 'Set-Cookie': await signIn(fid, sess.sub) });
+  }
+  if (path === '/api/family/join' && method === 'POST') {
+    if (!sess.account) return json({ error: 'Sign in with Google to join a family' }, 403);
+    const body = await readJson(request);
+    const code = String((body && body.code) || '').replace(/^.*[?&]invite=/, '').trim();
+    const r = await useInvite(sess.account, code);
+    if (r.error) return json({ error: r.error }, 400);
+    return json({ ok: true }, 200, { 'Set-Cookie': await signIn(sess.account.family_id, sess.sub) });
   }
 
-  if (path === '/api/passcode' && method === 'POST') {
+  if (!sess.fid) return json({ error: 'Create or join a family first', needsFamily: true }, 403);
+  const fid = sess.fid, fam = sess.family;
+  if (sess.account) await db.prepare('UPDATE accounts SET last_seen = ? WHERE sub = ?').bind(Date.now(), sess.sub).run();
+
+  // ---- family settings: people, invites, tablet passcode
+  if (path === '/api/family' && method === 'GET') {
+    const people = await db.prepare('SELECT sub, email, name, picture, role, last_seen FROM accounts WHERE family_id = ? ORDER BY created_at').bind(fid).all();
+    const invites = isManager(sess) ? await db.prepare('SELECT code, created_at, expires_at, uses, max_uses FROM invites WHERE family_id = ? AND expires_at > ? ORDER BY created_at DESC').bind(fid, Date.now()).all() : { results: [] };
+    return json({
+      family: familyOut(fam), me: sess.sub || null, canManage: isManager(sess),
+      people: (people.results || []).map(p => ({ id: p.sub, email: p.email, name: p.name, picture: p.picture, role: p.role, lastSeen: p.last_seen })),
+      invites: (invites.results || []).map(i => ({ code: i.code, link: `${origin}/?invite=${i.code}`, expires: i.expires_at, uses: i.uses, maxUses: i.max_uses })),
+    });
+  }
+  if (path.startsWith('/api/family/') && !isManager(sess) && path !== '/api/family/leave') return json({ error: 'Only the family’s owner or an admin can change this' }, 403);
+  if (path === '/api/family/rename' && method === 'POST') {
+    const body = await readJson(request);
+    const name = String((body && body.name) || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    if (!name) return json({ error: 'Give your family a name' }, 400);
+    await db.prepare('UPDATE families SET name = ? WHERE id = ?').bind(name, fid).run();
+    return json({ ok: true });
+  }
+  if (path === '/api/family/invite' && method === 'POST') {
+    const n = await db.prepare('SELECT COUNT(*) AS n FROM invites WHERE family_id = ? AND expires_at > ?').bind(fid, Date.now()).first();
+    if (n && n.n >= 10) return json({ error: 'Too many open invites — remove one first' }, 429);
+    const code = randomCode(10), now = Date.now();
+    await db.prepare('INSERT INTO invites (code, family_id, created_by, created_at, expires_at, uses, max_uses) VALUES (?, ?, ?, ?, ?, 0, 20)').bind(code, fid, sess.sub, now, now + INVITE_DAYS * 864e5).run();
+    return json({ code, link: `${origin}/?invite=${code}`, expires: now + INVITE_DAYS * 864e5 });
+  }
+  const invDel = path.match(/^\/api\/family\/invite\/([A-Z0-9]{6,12})$/);
+  if (invDel && method === 'DELETE') { await db.prepare('DELETE FROM invites WHERE code = ? AND family_id = ?').bind(invDel[1], fid).run(); return json({ ok: true }); }
+  if (path === '/api/family/member' && method === 'POST') {
+    const body = await readJson(request) || {};
+    const who = await db.prepare('SELECT * FROM accounts WHERE sub = ? AND family_id = ?').bind(String(body.id || ''), fid).first();
+    if (!who) return json({ error: 'That person isn’t in this family' }, 404);
+    if (who.role === 'owner' && sess.account.role !== 'owner') return json({ error: 'Only the owner can change the owner' }, 403);
+    if (body.remove) {
+      if (who.sub === sess.sub) return json({ error: 'Use “Leave this family” to remove yourself' }, 400);
+      await db.prepare('UPDATE accounts SET family_id = NULL, role = NULL WHERE sub = ?').bind(who.sub).run();
+      return json({ ok: true });
+    }
+    if (['admin', 'member'].includes(body.role) && who.role !== 'owner') { await db.prepare('UPDATE accounts SET role = ? WHERE sub = ?').bind(body.role, who.sub).run(); return json({ ok: true }); }
+    return json({ error: 'Nothing to change' }, 400);
+  }
+  if (path === '/api/family/leave' && method === 'POST') {
+    if (!sess.account) return json({ error: 'This tablet isn’t a person — use Sign out instead' }, 400);
+    if (sess.account.role === 'owner') {
+      const others = await db.prepare("SELECT sub FROM accounts WHERE family_id = ? AND sub != ? ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, created_at").bind(fid, sess.sub).all();
+      const next = (others.results || [])[0];
+      if (next) await db.prepare("UPDATE accounts SET role = 'owner' WHERE sub = ?").bind(next.sub).run(); // hand the family to the next person
+    }
+    await db.prepare('UPDATE accounts SET family_id = NULL, role = NULL WHERE sub = ?').bind(sess.sub).run();
+    return json({ ok: true }, 200, { 'Set-Cookie': await signIn('', sess.sub) });
+  }
+  if (path === '/api/family/passcode' && method === 'POST') {
+    const body = await readJson(request) || {};
+    if (body.remove) { await db.prepare('UPDATE families SET passcode = NULL WHERE id = ?').bind(fid).run(); return json({ ok: true }); }
+    if (!validPasscode(body.next)) return json({ error: 'Choose a passcode of at least 4 characters' }, 400);
+    await db.prepare('UPDATE families SET passcode = ? WHERE id = ?').bind(await makePasscodeRecord(body.next), fid).run();
+    return json({ ok: true });
+  }
+
+  if (path === '/api/logout-all' && method === 'POST') {
+    if (sess.account && !isManager(sess)) return json({ error: 'Only the family’s owner or an admin can do this' }, 403);
+    await db.prepare('UPDATE families SET epoch = epoch + 1 WHERE id = ?').bind(fid).run();
+    return json({ ok: true }, 200, { 'Set-Cookie': await signIn(fid, sess.sub) }); // keep this device signed in
+  }
+
+  if (path === '/api/passcode' && method === 'POST') { // tablet passcode change from an old screen
     const body = await readJson(request);
     if (!body || !validPasscode(body.next)) return json({ error: 'Choose a passcode of at least 4 characters' }, 400);
-    if (!(await checkPasscode(await getConfig(db, 'passcode'), body.current || ''))) return json({ error: 'Current passcode is not right' }, 401);
-    await setConfig(db, 'passcode', await makePasscodeRecord(body.next));
-    await setConfig(db, 'session_epoch', String(Number(await sessionEpoch(db)) + 1));
-    return json({ ok: true }, 200, { 'Set-Cookie': await makeSessionCookie(db) });
+    if (!isManager(sess) && !(fam.passcode && await checkPasscode(fam.passcode, body.current || ''))) return json({ error: 'Current passcode is not right' }, 401);
+    await db.prepare('UPDATE families SET passcode = ?, epoch = epoch + 1 WHERE id = ?').bind(await makePasscodeRecord(body.next), fid).run();
+    return json({ ok: true }, 200, { 'Set-Cookie': await signIn(fid, sess.sub) });
   }
 
   if (path === '/api/board' && method === 'GET') {
-    const row = await db.prepare('SELECT data, version, updated_at FROM board WHERE id = ?').bind(BOARD_ID).first();
-    if (!row) return json({ version: 0, data: null });
+    const row = await db.prepare('SELECT data, version, updated_at FROM board WHERE id = ?').bind(fid).first();
+    if (!row) return json({ version: 0, data: null, familyId: fid });
     const since = Number(url.searchParams.get('since'));
-    if (url.searchParams.has('since') && since === row.version) return json({ version: row.version, unchanged: true });
-    return json({ version: row.version, updatedAt: row.updated_at, data: JSON.parse(row.data) });
+    if (url.searchParams.has('since') && since === row.version) return json({ version: row.version, unchanged: true, familyId: fid });
+    return json({ version: row.version, updatedAt: row.updated_at, data: JSON.parse(row.data), familyId: fid });
   }
 
   if (path === '/api/board' && method === 'PUT') {
@@ -583,35 +806,53 @@ async function handleApi(request, env, url, ctx) {
     let body;
     try { body = JSON.parse(text); } catch (e) { return json({ error: 'Invalid JSON' }, 400); }
     if (!body || typeof body.data !== 'object' || body.data === null || !Number.isInteger(body.baseVersion)) return json({ error: 'Invalid board' }, 400);
+    if (body.familyId && body.familyId !== fid) return json({ error: 'This device switched families — reload Calendora', wrongFamily: true }, 409);
     const data = JSON.stringify(body.data);
     const now = Date.now();
     let res;
     if (body.baseVersion === 0) {
-      res = await db.prepare('INSERT OR IGNORE INTO board (id, data, version, updated_at) VALUES (?, ?, 1, ?)').bind(BOARD_ID, data, now).run();
+      res = await db.prepare('INSERT OR IGNORE INTO board (id, data, version, updated_at) VALUES (?, ?, 1, ?)').bind(fid, data, now).run();
     } else {
-      res = await db.prepare('UPDATE board SET data = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?').bind(data, now, BOARD_ID, body.baseVersion).run();
+      res = await db.prepare('UPDATE board SET data = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?').bind(data, now, fid, body.baseVersion).run();
     }
     if (res.meta && res.meta.changes === 1) {
       const al = body.data.settings && body.data.settings.anylist;
-      if (al && al.on && env.ANYLIST_EMAIL && ctx && ctx.waitUntil) ctx.waitUntil(anylistSync(env).catch(() => {}));
+      if (al && al.on && ctx && ctx.waitUntil) ctx.waitUntil(anylistSync(env, fid).catch(() => {}));
       return json({ ok: true, version: body.baseVersion + 1, updatedAt: now });
     }
     // someone else saved first: send back what is on the server
-    const row = await db.prepare('SELECT data, version, updated_at FROM board WHERE id = ?').bind(BOARD_ID).first();
+    const row = await db.prepare('SELECT data, version, updated_at FROM board WHERE id = ?').bind(fid).first();
     return json({ error: 'conflict', version: row ? row.version : 0, updatedAt: row ? row.updated_at : 0, data: row ? JSON.parse(row.data) : null }, 409);
   }
 
   if (path === '/api/anylist' && method === 'GET') {
     let status = null;
-    try { status = JSON.parse((await getConfig(db, 'anylist_status')) || 'null'); } catch (e) { status = null; }
-    return json({ configured: !!(env.ANYLIST_EMAIL && env.ANYLIST_PASSWORD), status });
+    try { status = JSON.parse((await getConfig(db, famKey(fid, 'anylist_status'))) || 'null'); } catch (e) { status = null; }
+    const creds = await anylistCreds(db, env, fid);
+    return json({ configured: !!creds, email: creds && !creds.fromEnv ? creds.email : (creds ? 'set on Cloudflare' : ''), canManage: isManager(sess) || !!sess.device, status });
+  }
+  if (path === '/api/anylist/login' && method === 'POST') {
+    if (sess.account && !isManager(sess)) return json({ error: 'Only the family’s owner or an admin can connect AnyList' }, 403);
+    const body = await readJson(request) || {};
+    if (body.remove) {
+      await db.prepare('UPDATE families SET anylist = NULL WHERE id = ?').bind(fid).run();
+      await setConfig(db, famKey(fid, 'anylist_tokens'), '{}');
+      return json({ ok: true });
+    }
+    const email = String(body.email || '').trim(), password = String(body.password || '');
+    if (!/^\S+@\S+\.\S+$/.test(email) || !password) return json({ error: 'Enter your AnyList email and password' }, 400);
+    const t = {};
+    try { await alLogin({ email, password }, t); } catch (e) { return json({ error: e.message || 'AnyList did not accept that sign-in' }, 400); }
+    await db.prepare('UPDATE families SET anylist = ? WHERE id = ?').bind(await sealJson(db, env, { email, password }), fid).run();
+    await alSaveTokens(db, fid, { ...t, email, clientId: alId() });
+    return json({ ok: true, email });
   }
   if (path === '/api/anylist/sync' && method === 'POST') {
-    const r = await anylistSync(env, { force: true });
-    if (r && r.skipped === 'not-configured') return json({ error: 'Add the AnyList email and password on Cloudflare first' }, 400);
+    const r = await anylistSync(env, fid, { force: true });
+    if (r && r.skipped === 'not-configured') return json({ error: 'Connect your AnyList account first' }, 400);
     if (r && r.skipped === 'off') return json({ error: 'Turn on AnyList sync first' }, 400);
     let status = null;
-    try { status = JSON.parse((await getConfig(db, 'anylist_status')) || 'null'); } catch (e) { status = null; }
+    try { status = JSON.parse((await getConfig(db, famKey(fid, 'anylist_status'))) || 'null'); } catch (e) { status = null; }
     return json({ result: r, status });
   }
 
@@ -621,20 +862,22 @@ async function handleApi(request, env, url, ctx) {
     const buf = await request.arrayBuffer();
     if (!buf.byteLength) return json({ error: 'Empty photo' }, 400);
     if (buf.byteLength > MAX_IMAGE_BYTES) return json({ error: 'That photo is too large' }, 413);
+    const n = await db.prepare('SELECT COUNT(*) AS n FROM images WHERE family_id = ?').bind(fid).first();
+    if (n && n.n >= MAX_IMAGES_PER_FAMILY) return json({ error: 'Your family has reached the photo limit — delete some recipe photos first' }, 413);
     const id = b64u(crypto.getRandomValues(new Uint8Array(12)));
-    await db.prepare('INSERT INTO images (id, type, data, created_at) VALUES (?, ?, ?, ?)').bind(id, type, buf, Date.now()).run();
+    await db.prepare('INSERT INTO images (id, type, data, created_at, family_id) VALUES (?, ?, ?, ?, ?)').bind(id, type, buf, Date.now(), fid).run();
     return json({ id });
   }
 
   const imgMatch = path.match(/^\/api\/images\/([A-Za-z0-9_-]{8,40})$/);
   if (imgMatch && method === 'GET') {
-    const row = await db.prepare('SELECT type, data FROM images WHERE id = ?').bind(imgMatch[1]).first();
+    const row = await db.prepare('SELECT type, data FROM images WHERE id = ? AND family_id = ?').bind(imgMatch[1], fid).first();
     if (!row) return json({ error: 'Photo not found' }, 404);
     const data = row.data instanceof ArrayBuffer ? row.data : new Uint8Array(row.data);
     return new Response(data, { headers: { 'Content-Type': row.type, 'Cache-Control': 'private, max-age=31536000, immutable' } });
   }
   if (imgMatch && method === 'DELETE') {
-    await db.prepare('DELETE FROM images WHERE id = ?').bind(imgMatch[1]).run();
+    await db.prepare('DELETE FROM images WHERE id = ? AND family_id = ?').bind(imgMatch[1], fid).run();
     return json({ ok: true });
   }
 
@@ -705,21 +948,22 @@ async function handleApi(request, env, url, ctx) {
   // Google Calendar copies, one per Google account, written by whichever device last synced it.
   if (path === '/api/snapshots' && method === 'GET') {
     const since = Number(url.searchParams.get('since')) || 0;
-    const rows = await db.prepare("SELECT key, data, updated_at FROM snapshots WHERE key LIKE 'google:%'").all();
+    const prefix = gSnapPrefix(fid);
+    const rows = await db.prepare('SELECT key, data, updated_at FROM snapshots WHERE key LIKE ?').bind(`${prefix}%`).all();
     const out = {};
-    for (const r of rows.results || []) out[r.key.slice(7)] = r.updated_at > since ? { at: r.updated_at, data: JSON.parse(r.data) } : { at: r.updated_at, unchanged: true };
+    for (const r of rows.results || []) { const acct = r.key.slice(prefix.length); if (acct.includes(':')) continue; out[acct] = r.updated_at > since ? { at: r.updated_at, data: JSON.parse(r.data) } : { at: r.updated_at, unchanged: true }; }
     return json({ google: out });
   }
   if (path.startsWith('/api/snapshots/google/')) {
     const acct = decodeURIComponent(path.slice('/api/snapshots/google/'.length));
     if (!/^[^\s/@]+@[^\s/@]+$/.test(acct)) return json({ error: 'Bad account' }, 400);
-    if (method === 'DELETE') { await db.prepare('DELETE FROM snapshots WHERE key = ?').bind(`google:${acct}`).run(); return json({ ok: true }); }
+    if (method === 'DELETE') { await db.prepare('DELETE FROM snapshots WHERE key = ?').bind(`${gSnapPrefix(fid)}${acct}`).run(); return json({ ok: true }); }
     if (method === 'PUT') {
       const body = await readJson(request);
       if (!body || !Array.isArray(body.events) || typeof body.calendars !== 'object') return json({ error: 'Bad snapshot' }, 400);
       let data = JSON.stringify({ events: body.events, calendars: body.calendars, syncedAt: Number(body.syncedAt) || Date.now() });
       if (data.length > SNAP_MAX) data = JSON.stringify({ events: body.events.map(e => ({ ...e, notes: '' })), calendars: body.calendars, syncedAt: Number(body.syncedAt) || Date.now() });
-      if (!(await putSnapshot(db, `google:${acct}`, data))) return json({ error: 'Too many events to save a copy' }, 413);
+      if (!(await putSnapshot(db, `${gSnapPrefix(fid)}${acct}`, data))) return json({ error: 'Too many events to save a copy' }, 413);
       return json({ ok: true, at: Date.now() });
     }
   }
@@ -804,7 +1048,7 @@ async function handleApi(request, env, url, ctx) {
     return json({ results: out });
   }
   if (path === '/api/news' && method === 'GET') {
-    const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(BOARD_ID).first();
+    const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(fid).first();
     let feeds = [];
     try { const st = row ? (JSON.parse(row.data).settings || {}) : {}; feeds = Array.isArray(st.newsFeeds) ? st.newsFeeds : DEFAULT_NEWS; } catch (e) { feeds = DEFAULT_NEWS; }
     feeds = feeds.filter(f => f && /^https?:\/\//i.test(f.url || '')).slice(0, 8);
@@ -822,7 +1066,7 @@ async function handleApi(request, env, url, ctx) {
     // Fetch a calendar feed (e.g. an iCloud "Public Calendar" link) on the family's behalf.
     // The link is looked up in the shared board, so only feeds the family added can be fetched.
     const id = url.searchParams.get('feed') || '';
-    const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(BOARD_ID).first();
+    const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(fid).first();
     let feeds = [];
     try { feeds = row ? (JSON.parse(row.data).icalFeeds || []) : []; } catch (e) { feeds = []; }
     const feed = Array.isArray(feeds) ? feeds.find(f => f && f.id === id) : null;
@@ -832,7 +1076,7 @@ async function handleApi(request, env, url, ctx) {
     try { host = new URL(target).hostname; } catch (e) { return json({ error: 'That calendar link is not valid' }, 400); }
     if (!/^https?:\/\//i.test(target)) return json({ error: 'The link must start with webcal:// or https://' }, 400);
     if (host !== 'localhost') target = target.replace(/^http:\/\//i, 'https://');
-    const saved = () => db.prepare('SELECT data, updated_at FROM snapshots WHERE key = ?').bind(`ical:${id}`).first();
+    const saved = () => db.prepare('SELECT data, updated_at FROM snapshots WHERE key = ?').bind(`ical:${fid}:${id}`).first();
     const fallback = async (msg, status) => {
       const row = await saved().catch(() => null);
       if (row) return new Response(row.data, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store', 'X-Snapshot-At': String(row.updated_at), 'X-Snapshot-Reason': encodeURIComponent(msg) } });
@@ -851,8 +1095,8 @@ async function handleApi(request, env, url, ctx) {
     const text = await r.text();
     if (text.length > 10000000) return json({ error: 'That calendar is too large' }, 502);
     if (!text.includes('BEGIN:VCALENDAR')) return fallback('That link is not a calendar feed', 502);
-    if (ctx) ctx.waitUntil(putSnapshot(db, `ical:${id}`, text).catch(() => {}));
-    else await putSnapshot(db, `ical:${id}`, text).catch(() => {});
+    if (ctx) ctx.waitUntil(putSnapshot(db, `ical:${fid}:${id}`, text).catch(() => {}));
+    else await putSnapshot(db, `ical:${fid}:${id}`, text).catch(() => {});
     return new Response(text, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store' } });
   }
 
@@ -869,6 +1113,11 @@ export default {
     return env.ASSETS.fetch(request);
   },
   async scheduled(event, env, ctx) {
-    if (env.DB && env.ANYLIST_EMAIL) ctx.waitUntil(anylistSync(env).catch(() => {}));
+    if (!env.DB) return;
+    ctx.waitUntil((async () => {
+      await ensureSchema(env.DB);
+      const rows = await env.DB.prepare('SELECT id FROM families WHERE anylist IS NOT NULL OR id = ? LIMIT 50').bind(BOARD_ID).all();
+      for (const f of rows.results || []) await anylistSync(env, f.id).catch(() => {});
+    })());
   },
 };
