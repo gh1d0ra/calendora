@@ -2424,16 +2424,7 @@
         <label class="field inline"><span>Show dinner on the week view</span><select data-setting="showMeals" data-bool="1">${opt('true', 'Yes', s.showMeals)}${opt('false', 'No', s.showMeals)}</select></label>
         <label class="field inline"><span>Idle screen starts after</span><select data-setting="screensaverMin" data-num="1">${[[0, 'Never'], [1, '1 minute'], [5, '5 minutes'], [10, '10 minutes'], [15, '15 minutes'], [30, '30 minutes'], [60, '1 hour']].map(([v, l]) => opt(v, l, s.screensaverMin)).join('')}</select></label>
       </section>
-      ${cloud.mode === 'server' ? `<section class="card">
-        <h3>Family sharing</h3>
-        <p class="muted" id="cloudStatus">${cloudStatusText()}</p>
-        <div class="row wrap">
-          <button class="btn" data-action="cloud-sync">Sync now</button>
-          <button class="btn" data-action="cloud-passcode">Change passcode</button>
-          <button class="btn" data-action="cloud-logout-all">Sign out other devices</button>
-          <button class="btn ghost" data-action="cloud-logout">Sign out this device</button>
-        </div>
-      </section>` : ''}
+      ${cloud.mode === 'server' ? familySection() : ''}
       ${cloud.mode === 'server' ? anylistSection() : ''}
       ${cloud.mode === 'server' ? icalSection() : ''}
       ${googleSection()}
@@ -2884,6 +2875,7 @@
   function seedDinners() {
     const st = state.settings;
     if ((st.dinnerSeed || 0) >= DINNER_SEED) return;
+    if (cloud.mode === 'server' && cloud.familyId && cloud.familyId !== 'family') return; // other families start with their own list
     const have = new Set((st.dinnerPresets || []).map(x => x.toLowerCase()));
     st.dinnerPresets = [...(st.dinnerPresets || []), ...DINNER_DEFAULTS.filter(x => !have.has(x.toLowerCase()))];
     st.dinnerSeed = DINNER_SEED; save();
@@ -3065,10 +3057,29 @@
         fn: () => { state.icalFeeds = icalFeeds().filter(x => x.id !== f.id); delete ical.data[f.id]; saveIcalCache(); icalRemap(); save(); renderView(); },
       }]);
     },
+    'google-signin'() { const e = $('#lock .lock-error'); if (e) e.textContent = 'Google sign-in is loading — if nothing appears, check the internet connection and reload.'; renderGoogleButton(); },
+    async 'cloud-logout-now'(el, ev) { if (ev) ev.preventDefault(); try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch (e) { /* ignore */ } try { if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect(); } catch (e) { /* ignore */ } location.reload(); },
+    async 'fam-invite'() {
+      const d = await famCall('/api/family/invite', {}, '');
+      if (!d || !d.link) return;
+      try { await navigator.clipboard.writeText(d.link); toast('Invite link copied — send it by text or email'); } catch (e) { toast('Invite link created — tap Copy next to it'); }
+    },
+    async 'fam-copy'(el) { try { await navigator.clipboard.writeText(el.dataset.link); toast('Copied'); } catch (e) { toast('Select the link and copy it'); } },
+    'fam-invite-del'(el) { famCall(`/api/family/invite/${el.dataset.code}`, {}, 'Invite cancelled', 'DELETE'); },
+    'fam-remove'(el) { choice(`Remove ${esc(el.dataset.name)}?`, 'They will be signed out and can no longer open your family’s Calendora. You can invite them again later.', [{ label: 'Remove', cls: 'danger', fn: () => famCall('/api/family/member', { id: el.dataset.id, remove: true }, 'Removed') }]); },
+    'fam-passcode'() { tabletPasscodeModal(); },
+    'fam-passcode-off'() { choice('Turn off tablet sign-in?', 'New tablets won’t be able to sign in with the family code. Tablets already signed in stay in until you use “Sign out all other devices”.', [{ label: 'Turn off', cls: 'danger', fn: () => famCall('/api/family/passcode', { remove: true }, 'Tablet sign-in turned off') }]); },
+    'fam-leave'() {
+      choice('Leave this family?', 'This device signs out and you won’t see the family’s Calendora anymore. Your family’s data stays for everyone else. If you’re the owner, the next person becomes the owner.', [{
+        label: 'Leave', cls: 'danger',
+        fn: async () => { const d = await famCall('/api/family/leave', {}, ''); if (d) { localStorage.removeItem(STORE_KEY); localStorage.removeItem(CLOUD_KEY); localStorage.removeItem(FID_KEY); location.reload(); } },
+      }]);
+    },
+    async 'anylist-disconnect'(el, ev) { if (ev) ev.preventDefault(); const r = await api('/api/anylist/login', { method: 'POST', body: JSON.stringify({ remove: true }) }).catch(() => null); toast(r && r.ok ? 'AnyList disconnected' : 'Could not disconnect'); anylist.info = null; anylistLoad(); },
     'cloud-sync'() { if (JSON.stringify(sharedPart()) !== cloud.lastStr) cloudPush(); else cloudPull(); toast('Syncing…'); },
     'cloud-passcode'() { passcodeModal(); },
     'cloud-logout-all'() {
-      choice('Sign out other devices?', 'Every other phone, tablet and computer will need the family passcode again. This device stays signed in.', [{
+      choice('Sign out all other devices?', 'Every other phone, tablet and computer in your family will need to sign in again. This device stays signed in.', [{
         label: 'Sign them out', cls: 'danger',
         fn: () => api('/api/logout-all', { method: 'POST', body: '{}' }).then(r => toast(r.ok ? 'Other devices signed out' : 'Could not sign out other devices')).catch(() => toast('Can’t reach Calendora right now')),
       }]);
@@ -3078,7 +3089,8 @@
         label: 'Sign out', cls: 'danger',
         fn: async () => {
           try { await api('/api/logout', { method: 'POST', body: '{}' }); } catch (e) { /* ignore */ }
-          localStorage.removeItem(STORE_KEY); localStorage.removeItem(CLOUD_KEY);
+          localStorage.removeItem(STORE_KEY); localStorage.removeItem(CLOUD_KEY); localStorage.removeItem(FID_KEY);
+          try { if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect(); } catch (e) { /* ignore */ }
           location.reload();
         },
       }]);
@@ -3183,7 +3195,9 @@
   document.addEventListener('submit', async evt => {
     const f = evt.target.closest('[data-form]'); if (!f) return;
     evt.preventDefault();
-    if (f.dataset.form === 'setup' || f.dataset.form === 'login') { lockSubmit(f); return; }
+    if (['setup', 'login', 'family-create', 'family-join'].includes(f.dataset.form)) { lockSubmit(f); return; }
+    if (f.dataset.form === 'anylist-login') { anylistLogin(f); return; }
+    if (f.dataset.form === 'fam-rename') { famCall('/api/family/rename', { name: f.elements.name.value.trim() }, 'Family name saved'); return; }
     if (f.dataset.form === 'news-add') { newsAdd(f.elements.name.value.trim(), f.elements.url.value.trim()); return; }
     if (f.dataset.form === 'ical-add') {
       const url = f.elements.url.value.trim();
@@ -3262,6 +3276,7 @@
       const f = icalFeed(t.dataset.icalMember); if (!f) return;
       f.memberId = t.value; icalRemap(); save(); toast(`${f.name} → ${t.value ? memberById(t.value).name : 'Everyone'}`); return;
     }
+    if (t.matches('[data-fam-role]')) { famCall('/api/family/member', { id: t.dataset.famRole, role: t.value }, 'Role updated'); return; }
     if (t.matches('[data-ui-setting]')) { state.ui[t.dataset.uiSetting] = Number(t.value); save({ localOnly: true }); render(); return; }
     if (t.matches('[data-setting-lines]')) { state.settings[t.dataset.settingLines] = [...new Set(t.value.split('\n').map(x => x.trim()).filter(Boolean))]; save(); toast('Saved'); return; }
     if (t.matches('[data-setting-bool]')) { state.settings[t.dataset.settingBool] = t.checked; save(); render(); if (t.dataset.settingBool === 'babyEnabled' && t.checked) toast('Baby is now in the menu'); return; }
@@ -3329,7 +3344,17 @@
   // Anywhere else (GitHub Pages, a local file) it runs in local-only mode.
   const CLOUD_KEY = 'calendora.cloud';
   const SHARED_KEYS = ['members', 'events', 'chores', 'choreDone', 'lists', 'meals', 'rewards', 'redemptions', 'icalFeeds', 'recipes', 'babies', 'babyLog', 'workouts', 'supplements', 'suppTaken', 'illnesses', 'healthLog'];
-  const cloud = { mode: 'unknown', configured: false, signedIn: false, version: 0, lastStr: '', pushing: false, again: false, offline: false, lastSync: 0, timer: null };
+  const cloud = { mode: 'unknown', configured: false, signedIn: false, version: 0, lastStr: '', pushing: false, again: false, offline: false, lastSync: 0, timer: null, family: null, account: null, device: false, googleClientId: '', needsFamily: false };
+  const FID_KEY = 'calendora.fid';
+  cloud.familyId = localStorage.getItem(FID_KEY) || '';
+  // An invite link (?invite=CODE) is remembered until this device signs in, then used once
+  const INVITE_KEY = 'calendora.invite';
+  try {
+    const inv = new URLSearchParams(location.search).get('invite');
+    if (inv) { sessionStorage.setItem(INVITE_KEY, inv); history.replaceState(null, '', location.pathname); }
+  } catch (e) { /* ignore */ }
+  const pendingInvite = () => { try { return sessionStorage.getItem(INVITE_KEY) || ''; } catch (e) { return ''; } };
+  const clearInvite = () => { try { sessionStorage.removeItem(INVITE_KEY); } catch (e) { /* ignore */ } };
   try { const m = JSON.parse(localStorage.getItem(CLOUD_KEY) || 'null'); if (m) { cloud.version = m.version || 0; cloud.lastStr = m.lastStr || ''; cloud.lastSync = m.lastSync || 0; cloud.known = true; } } catch (e) { /* ignore */ }
   const saveCloudMeta = () => { try { localStorage.setItem(CLOUD_KEY, JSON.stringify({ version: cloud.version, lastStr: cloud.lastStr, lastSync: cloud.lastSync })); } catch (e) { /* ignore */ } };
   const cloudOn = () => cloud.mode === 'server' && cloud.signedIn;
@@ -3373,7 +3398,19 @@
     cloud.mode = 'server';
     cloud.configured = r.data.configured;
     cloud.signedIn = r.data.signedIn;
+    cloud.family = r.data.family || null; cloud.account = r.data.account || null; cloud.device = !!r.data.device;
+    cloud.googleClientId = r.data.googleClientId || ''; cloud.needsFamily = !!r.data.needsFamily;
+    if (cloud.needsFamily) {
+      if (pendingInvite()) { // came from an invite link: join right away
+        const j = await api('/api/family/join', { method: 'POST', body: JSON.stringify({ code: pendingInvite() }) }).catch(() => null);
+        clearInvite();
+        if (j && j.ok) { toast('Welcome to the family!'); return cloudInit(); }
+        showFamilySetup((j && j.data && j.data.error) || ''); return;
+      }
+      showFamilySetup(); return;
+    }
     if (!cloud.signedIn) { showLock(); return; }
+    if (pendingInvite()) { clearInvite(); setTimeout(() => toast(`This device is already signed in to ${cloud.family ? cloud.family.name : 'a family'}. To join another family, sign out first.`), 800); }
     await cloudAfterSignIn();
   }
 
@@ -3384,10 +3421,14 @@
     if (r.status === 401) { cloud.signedIn = false; showLock(); return; }
     if (!r.ok) { toast('Could not load the family board'); return; }
     cloud.offline = false;
+    // A different family than this device last showed: start from a clean slate so nothing carries across
+    const fidNow = r.data.familyId || '';
+    if (fidNow && fidNow !== cloud.familyId && !(cloud.familyId === '' && fidNow === 'family' && cloud.known)) resetForFamily();
+    cloud.familyId = fidNow; try { localStorage.setItem(FID_KEY, fidNow); } catch (e) { /* ignore */ }
     if (!r.data.data) {
       cloud.version = 0; cloud.lastStr = '';
       await cloudPush(true);
-      toast('Family board created — every signed-in device will now share it');
+      toast(`Welcome to Calendora${cloud.family ? `, ${cloud.family.name}` : ''}! Start by adding your family in Settings.`);
     } else {
       cloud.version = r.data.version;
       applyShared(r.data.data);
@@ -3413,7 +3454,8 @@
     if (!force && str === cloud.lastStr) return;
     cloud.pushing = true;
     try {
-      const r = await api('/api/board', { method: 'PUT', body: JSON.stringify({ data: JSON.parse(str), baseVersion: cloud.version }) });
+      const r = await api('/api/board', { method: 'PUT', body: JSON.stringify({ data: JSON.parse(str), baseVersion: cloud.version, familyId: cloud.familyId }) });
+      if (r.status === 409 && r.data && r.data.wrongFamily) { location.reload(); return; }
       if (r.ok) {
         cloud.version = r.data.version; cloud.lastStr = str; cloud.offline = false; cloud.lastSync = Date.now();
         if (state.settings.anylist && state.settings.anylist.on) setTimeout(cloudPull, 3500); // pick up items AnyList sent back
@@ -3477,41 +3519,111 @@
   }
   function cloudStatusText() {
     if (cloud.offline) return 'Offline right now — changes are kept on this device and sync when the connection is back.';
-    return cloud.lastSync ? `Shared with every signed-in device · synced ${timeAgo(cloud.lastSync)}.` : 'Shared with every signed-in device.';
+    return cloud.lastSync ? `Shared with your family’s signed-in devices · synced ${timeAgo(cloud.lastSync)}.` : 'Shared with your family’s signed-in devices.';
   }
 
-  // ---- lock screen
+  // Clean slate for a different family on this device (keeps only this device's display preferences)
+  function resetForFamily() {
+    const keepUi = { textSize: state.ui.textSize, weekLayout: state.ui.weekLayout };
+    const fresh = defaults();
+    Object.keys(state).forEach(k => { delete state[k]; });
+    Object.assign(state, fresh);
+    state.ui = { ...fresh.ui, ...keepUi };
+    state.settings.dinnerSeed = 99; // the starter dinner list belongs to the first family only
+    ['calendora.ical', 'calendora.news', 'calendora.verse', 'calendora.gtokens', CLOUD_KEY].forEach(k => { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } });
+    cloud.version = 0; cloud.lastStr = '';
+    ical.data = {}; ical.flat = []; news.items = []; verse.data = null;
+    save({ localOnly: true });
+  }
+
+  // ---- welcome / sign-in screen
   function showLock(error = '') {
     const el = $('#lock');
-    const setup = !cloud.configured;
     el.hidden = false;
-    el.innerHTML = `<form class="lock-card" data-form="${setup ? 'setup' : 'login'}">
+    const invited = !!pendingInvite();
+    el.innerHTML = `<div class="lock-card welcome">
       <div class="logo big"><span></span></div>
-      <h1>${setup ? 'Welcome to Calendora' : 'Calendora'}</h1>
-      <p class="muted">${setup ? 'Create a family passcode. Everyone in the family uses it once on each of their devices.' : 'Enter the family passcode to open the family board on this device.'}</p>
-      <input type="password" name="pass" placeholder="${setup ? 'New family passcode' : 'Family passcode'}" autocomplete="${setup ? 'new-password' : 'current-password'}" minlength="4" required autofocus />
-      ${setup ? '<input type="password" name="pass2" placeholder="Type it again" autocomplete="new-password" minlength="4" required />' : ''}
+      <h1>Calendora</h1>
+      <p class="muted">${invited ? 'You’ve been invited to join a family on Calendora. Sign in with Google to accept.' : 'Your family’s calendar, chores, meals and lists — together on every screen.'}</p>
+      <div id="gSignIn" class="g-signin"><button class="btn primary block" type="button" data-action="google-signin">Sign in with Google</button></div>
       <div class="lock-error" role="alert">${esc(error)}</div>
-      <button class="btn primary block" type="submit">${setup ? 'Create passcode' : 'Open Calendora'}</button>
-      ${setup ? '<p class="muted small">At least 4 characters. You can change it later in Settings.</p>' : ''}
-    </form>`;
-    setTimeout(() => { const i = $('#lock input'); if (i) i.focus(); }, 50);
+      ${invited ? '' : '<p class="muted small">New here? Sign in with Google, then create your family — it’s free.</p>'}
+      <details class="tablet-signin"><summary>Wall tablet? Sign in with a family code</summary>
+        <form data-form="login">
+          <input name="family" placeholder="Family code (from Settings)" autocomplete="off" autocapitalize="characters" maxlength="10" />
+          <input type="password" name="pass" placeholder="Tablet passcode" autocomplete="current-password" minlength="4" required />
+          <button class="btn block" type="submit">Open Calendora</button>
+          <p class="muted small">A family’s owner sets the tablet passcode in Settings → Family.</p>
+        </form>
+      </details>
+      <p class="muted small lock-links"><a href="/privacy.html" target="_blank" rel="noopener">Privacy</a></p>
+    </div>`;
+    renderGoogleButton();
+  }
+  // Google's own "Sign in with Google" button (Google Identity Services)
+  async function renderGoogleButton() {
+    const box = $('#gSignIn');
+    if (!box || !cloud.googleClientId) return;
+    try { await gLoadScript(); } catch (e) { return; } // keep our plain button if Google's script can't load
+    if (!window.google || !google.accounts || !google.accounts.id) return;
+    google.accounts.id.initialize({ client_id: cloud.googleClientId, callback: resp => authGoogle(resp.credential), ux_mode: 'popup', auto_select: false, cancel_on_tap_outside: true });
+    box.innerHTML = '';
+    google.accounts.id.renderButton(box, { theme: 'filled_blue', size: 'large', shape: 'pill', text: 'continue_with', width: Math.min(320, box.clientWidth || 320) });
+  }
+  async function authGoogle(credential) {
+    const errBox = $('#lock .lock-error');
+    if (errBox) errBox.textContent = 'Signing in…';
+    try {
+      const r = await api('/api/auth/google', { method: 'POST', body: JSON.stringify({ credential, invite: pendingInvite() }) });
+      if (!r.ok) { if (errBox) errBox.textContent = (r.data && r.data.error) || 'Sign-in failed — try again'; return; }
+      clearInvite();
+      if (r.data.note) setTimeout(() => toast(r.data.note), 600);
+      await cloudInit();
+    } catch (e) { if (errBox) errBox.textContent = 'Can’t reach Calendora — check the internet connection'; }
+  }
+  // Signed in with Google but not in a family yet
+  function showFamilySetup(error = '') {
+    const el = $('#lock');
+    el.hidden = false;
+    const who = cloud.account || {};
+    el.innerHTML = `<div class="lock-card welcome">
+      <div class="logo big"><span></span></div>
+      <h1>Welcome${who.name ? `, ${esc(who.name.split(' ')[0])}` : ''}!</h1>
+      <p class="muted">Create your family’s Calendora, or join one you were invited to.</p>
+      <form data-form="family-create" class="fs-block">
+        <h3>Start a new family</h3>
+        <input name="name" placeholder="Family name (e.g. The Smiths)" maxlength="60" required />
+        <button class="btn primary block" type="submit">Create family</button>
+      </form>
+      <form data-form="family-join" class="fs-block">
+        <h3>Join a family</h3>
+        <input name="code" placeholder="Paste the invite link" autocomplete="off" required />
+        <button class="btn block" type="submit">Join</button>
+      </form>
+      <div class="lock-error" role="alert">${esc(error)}</div>
+      <p class="muted small">Signed in as ${esc(who.email || '')} · <a href="#" data-action="cloud-logout-now">Use a different account</a></p>
+    </div>`;
   }
   function hideLock() { const el = $('#lock'); el.hidden = true; el.innerHTML = ''; }
 
   async function lockSubmit(form) {
-    const pass = form.elements.pass.value;
     const btn = $('button[type=submit]', form);
-    const fail = msg => { $('.lock-error', form).textContent = msg; btn.disabled = false; };
-    if (pass.length < 4) return fail('Use at least 4 characters');
-    if (form.dataset.form === 'setup' && pass !== form.elements.pass2.value) return fail('The two passcodes don’t match');
+    const errBox = $('#lock .lock-error');
+    const fail = msg => { if (errBox) errBox.textContent = msg; btn.disabled = false; };
+    const kind = form.dataset.form;
+    let path, body;
+    if (kind === 'family-create') { path = '/api/family/create'; body = { name: form.elements.name.value.trim() }; if (!body.name) return fail('Give your family a name'); }
+    else if (kind === 'family-join') { path = '/api/family/join'; body = { code: form.elements.code.value.trim() }; if (!body.code) return fail('Paste the invite link you were sent'); }
+    else {
+      const pass = form.elements.pass.value;
+      if (pass.length < 4) return fail('Use at least 4 characters');
+      path = '/api/login'; body = { passcode: pass, family: (form.elements.family && form.elements.family.value.trim()) || '' };
+    }
     btn.disabled = true;
     try {
-      const r = await api(form.dataset.form === 'setup' ? '/api/setup' : '/api/login', { method: 'POST', body: JSON.stringify({ passcode: pass }) });
-      if (r.status === 409 && form.dataset.form === 'setup') { cloud.configured = true; showLock('A passcode was already created — enter it here'); return; }
+      const r = await api(path, { method: 'POST', body: JSON.stringify(body) });
       if (!r.ok) return fail((r.data && r.data.error) || 'Something went wrong — try again');
-      cloud.configured = true; cloud.signedIn = true;
-      await cloudAfterSignIn();
+      await cloudInit();
     } catch (e) { fail('Can’t reach Calendora — check the internet connection'); }
   }
 
@@ -3869,6 +3981,83 @@
     anylist.loading = false;
     if (state.ui.view === 'settings' && !modalOpen && !isTyping()) renderView();
   }
+  // ---------------------------------------------------------------- family & sign-in (Settings)
+  const fam = { info: null, loading: false, at: 0, lastInvite: null };
+  async function famLoad() {
+    if (fam.loading) return; fam.loading = true;
+    try { const r = await api('/api/family'); if (r.ok) { fam.info = r.data; fam.at = Date.now(); if (r.data.family) cloud.family = { ...cloud.family, ...r.data.family }; } } catch (e) { /* offline */ }
+    fam.loading = false;
+    if (state.ui.view === 'settings' && !modalOpen) renderView();
+  }
+  async function famCall(path, body, okMsg, method = 'POST') {
+    try {
+      const r = await api(path, { method, body: JSON.stringify(body || {}) });
+      if (!r.ok) { toast((r.data && r.data.error) || 'That didn’t work — try again'); return null; }
+      if (okMsg) toast(okMsg);
+      fam.at = 0; famLoad();
+      return r.data || {};
+    } catch (e) { toast('Can’t reach Calendora right now'); return null; }
+  }
+  const ROLE_LABEL = { owner: 'Owner', admin: 'Admin', member: 'Member' };
+  function familySection() {
+    if (!fam.loading && (!fam.info || Date.now() - fam.at > 30000)) setTimeout(famLoad, 0);
+    const f = (fam.info && fam.info.family) || cloud.family || {};
+    const can = !!(fam.info && fam.info.canManage);
+    const me = fam.info && fam.info.me;
+    const people = (fam.info && fam.info.people) || [];
+    const invites = (fam.info && fam.info.invites) || [];
+    const who = cloud.account ? `Signed in as <b>${esc(cloud.account.name || cloud.account.email)}</b> (${esc(cloud.account.email)}) · ${ROLE_LABEL[cloud.account.role] || ''}` : 'This device is signed in with the family’s tablet passcode.';
+    return `<section class="card fam-card">
+      <h3>Family &amp; sign-in</h3>
+      ${can ? `<form class="row fam-name" data-form="fam-rename"><input name="name" value="${esc(f.name || '')}" maxlength="60" aria-label="Family name"><button class="btn" type="submit">Rename</button></form>` : `<p class="fam-title">${esc(f.name || 'Your family')}</p>`}
+      <p class="muted small">${who}</p>
+      <p class="muted small" id="cloudStatus">${cloudStatusText()}</p>
+      <h4>People who can sign in</h4>
+      <div class="fam-people">${people.length ? people.map(p => `<div class="fam-person">
+          ${p.picture ? `<img src="${esc(p.picture)}" alt="" referrerpolicy="no-referrer">` : `<span class="fp-init">${esc((p.name || p.email || '?')[0].toUpperCase())}</span>`}
+          <div class="fp-main"><b>${esc(p.name || p.email)}${p.id === me ? ' <small class="muted">(you)</small>' : ''}</b><small class="muted">${esc(p.email)}</small></div>
+          ${can && p.role !== 'owner' && p.id !== me ? `<select data-fam-role="${esc(p.id)}">${['admin', 'member'].map(r => `<option value="${r}" ${p.role === r ? 'selected' : ''}>${ROLE_LABEL[r]}</option>`).join('')}</select>
+            <button class="btn ghost small" data-action="fam-remove" data-id="${esc(p.id)}" data-name="${esc(p.name || p.email)}">Remove</button>` : `<span class="fp-role">${ROLE_LABEL[p.role] || ''}</span>`}
+        </div>`).join('') : '<div class="empty-sm">Loading…</div>'}</div>
+      ${can ? `<h4>Invite someone</h4>
+        <p class="muted small">Send them a link. They sign in with Google and join your family. Links work for ${14} days.</p>
+        <button class="btn primary" data-action="fam-invite">${icon('plus')} Create invite link</button>
+        ${invites.length ? `<div class="fam-invites">${invites.map(i => `<div class="fam-invite"><code>${esc(i.link)}</code><button class="btn small" data-action="fam-copy" data-link="${esc(i.link)}">Copy</button><button class="btn ghost small" data-action="fam-invite-del" data-code="${esc(i.code)}">Cancel</button><small class="muted">expires ${new Date(i.expires).toLocaleDateString()} · used ${i.uses}×</small></div>`).join('')}</div>` : ''}` : ''}
+      <h4>Wall tablets</h4>
+      <p class="muted small">Tablets without a Google account sign in with your family code <b class="fam-code">${esc(f.code || '…')}</b> and a tablet passcode.</p>
+      ${can ? `<div class="row wrap"><button class="btn" data-action="fam-passcode">${f.hasPasscode ? 'Change tablet passcode' : 'Set a tablet passcode'}</button>${f.hasPasscode ? '<button class="btn ghost" data-action="fam-passcode-off">Turn off tablet sign-in</button>' : ''}</div>` : (f.hasPasscode ? '' : '<p class="muted small">Ask the family’s owner to set a tablet passcode.</p>')}
+      <div class="row wrap fam-actions">
+        <button class="btn" data-action="cloud-sync">Sync now</button>
+        ${can || cloud.device ? '<button class="btn" data-action="cloud-logout-all">Sign out all other devices</button>' : ''}
+        <button class="btn ghost" data-action="cloud-logout">Sign out this device</button>
+        ${cloud.account ? '<button class="btn ghost danger-text" data-action="fam-leave">Leave this family</button>' : ''}
+      </div>
+    </section>`;
+  }
+  function tabletPasscodeModal() {
+    modal({
+      title: 'Tablet passcode',
+      body: `<p class="muted">Wall tablets sign in with your family code and this passcode. Changing it doesn’t sign out tablets that are already in.</p>
+        <label class="field"><span>New passcode</span><input type="password" name="next" autocomplete="new-password" minlength="4" autofocus></label>
+        <label class="field"><span>Again</span><input type="password" name="next2" autocomplete="new-password"></label>`,
+      saveLabel: 'Save passcode',
+      onSave(form) {
+        const next = form.elements.next.value;
+        if (next.length < 4) { toast('Use at least 4 characters'); return false; }
+        if (next !== form.elements.next2.value) { toast('The passcodes don’t match'); return false; }
+        famCall('/api/family/passcode', { next }, 'Tablet passcode saved');
+      },
+    });
+  }
+  async function anylistLogin(form) {
+    const btn = $('button[type=submit]', form); btn.disabled = true;
+    try {
+      const r = await api('/api/anylist/login', { method: 'POST', body: JSON.stringify({ email: form.elements.email.value.trim(), password: form.elements.password.value }) });
+      if (!r.ok) { toast((r.data && r.data.error) || 'AnyList didn’t accept that'); btn.disabled = false; return; }
+      toast('AnyList connected'); anylist.info = null; anylistLoad();
+    } catch (e) { toast('Can’t reach Calendora right now'); btn.disabled = false; }
+  }
+
   function anylistSection() {
     if (!anylist.loading && (!anylist.info || Date.now() - (anylist.loadedAt || 0) > 30000)) setTimeout(anylistLoad, 0);
     const cfg = state.settings.anylist || {};
@@ -3878,7 +4067,7 @@
     const st = info && info.status;
     let statusLine = '';
     if (!info) statusLine = '<span class="muted">Checking…</span>';
-    else if (!info.configured) statusLine = '<span class="warn-text">Waiting for your AnyList email and password on Cloudflare (steps below).</span>';
+    else if (!info.configured) statusLine = '<span class="muted">Connect your family’s AnyList account below to start.</span>';
     else if (!cfg.on) statusLine = '<span class="muted">Ready — switch it on to start syncing.</span>';
     else if (anylist.syncing) statusLine = 'Syncing…';
     else if (st && st.ok) statusLine = `Synced with AnyList “${esc(st.listName)}” · ${timeAgo(st.at)}`;
@@ -3893,15 +4082,13 @@
         <label class="field"><span>AnyList list name</span><input data-anylist="listName" value="${esc(cfg.listName || 'Groceries')}" maxlength="60" placeholder="Groceries"></label>
         <label class="field"><span>Calendora list</span><select data-anylist="listId">${target ? '' : '<option value="" selected>Create one automatically</option>'}${lists.map(l => `<option value="${l.id}" ${target && target.id === l.id ? 'selected' : ''}>${esc(l.emoji || '')} ${esc(l.name)}</option>`).join('')}</select></label>
       </div>
-      ${info && info.configured ? '' : `<details class="howto" open><summary>Connect your AnyList account</summary>
-        <ol>
-          <li>In the Cloudflare dashboard open <b>Workers &amp; Pages → calendora → Settings → Variables and secrets</b>.</li>
-          <li>Click <b>Add</b>, choose type <b>Secret</b>, name it <code>ANYLIST_EMAIL</code> and enter your AnyList email. <b>Deploy</b>.</li>
-          <li>Add another <b>Secret</b> named <code>ANYLIST_PASSWORD</code> with your AnyList password. <b>Deploy</b>.</li>
-          <li>Come back here — the switch above becomes available.</li>
-        </ol>
-        <p class="muted small">The password is stored encrypted by Cloudflare and only the Calendora server can use it. Nobody can read it back, including Calendora’s settings page.</p>
-      </details>`}
+      ${info && info.configured ? `<p class="muted small">AnyList account: <b>${esc(info.email || '')}</b>${info.canManage && info.email !== 'set on Cloudflare' ? ' · <a href="#" data-action="anylist-disconnect">Disconnect</a>' : ''}</p>` : (info && info.canManage ? `<form class="anylist-login" data-form="anylist-login">
+          <h4>Connect your AnyList account</h4>
+          <input name="email" type="email" placeholder="AnyList email" autocomplete="off" required>
+          <input name="password" type="password" placeholder="AnyList password" autocomplete="new-password" required>
+          <button class="btn primary" type="submit">Connect</button>
+          <p class="muted small">Your AnyList password is checked with AnyList, then stored encrypted on Calendora’s server and used only to sync your list. It is never shown again.</p>
+        </form>` : '<p class="muted small">Ask the family’s owner or an admin to connect AnyList.</p>')}
     </section>`;
   }
 

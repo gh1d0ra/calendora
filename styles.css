@@ -869,3 +869,32 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
 .sw-dic { font-size: 22px; }
 .sw-hint { font-weight: 700; font-size: 15px; opacity: .85; }
 @media (max-width: 700px) { .sw-ic { font-size: 34px; } .sw-temp { font-size: 36px; } .sw-days { gap: 10px; } }
+
+/* ---------- welcome / sign-in / family setup ---------- */
+.lock-card.welcome { max-width: 420px; text-align: center; }
+.g-signin { display: flex; justify-content: center; min-height: 44px; margin: 18px 0 6px; }
+.tablet-signin { margin-top: 14px; text-align: left; }
+.tablet-signin summary { cursor: pointer; font-weight: 800; color: var(--muted); text-align: center; }
+.tablet-signin form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.lock-links { margin-top: 14px; }
+.fs-block { text-align: left; display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #EFE8E0; }
+.fs-block h3 { margin: 0; font-size: 16px; }
+/* Settings → Family & sign-in */
+.fam-card h4 { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.fam-name input { flex: 1; font-weight: 800; font-size: 18px; }
+.fam-title { font-size: 20px; font-weight: 900; margin: 4px 0; }
+.fam-person { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #F1EBE4; }
+.fam-person img, .fp-init { width: 36px; height: 36px; border-radius: 50%; flex: none; object-fit: cover; }
+.fp-init { display: grid; place-items: center; background: #EFE8E0; font-weight: 900; }
+.fp-main { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.fp-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-role { font-size: 13px; font-weight: 800; color: var(--muted); }
+.fam-invites { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.fam-invite { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; background: #FAF6F1; border-radius: 12px; padding: 8px 10px; }
+.fam-invite code { flex: 1 1 220px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.fam-invite small { flex-basis: 100%; }
+.fam-code { font-family: ui-monospace, Menlo, monospace; letter-spacing: .12em; background: #FAF6F1; padding: 2px 8px; border-radius: 8px; }
+.fam-actions { margin-top: 18px; }
+.danger-text { color: #C62828; }
+.anylist-login { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; max-width: 420px; }
+.anylist-login h4 { margin: 0; }

@@ -20,3 +20,8 @@ binding = "AI"
 # AnyList shopping-list sync runs every minute (only when switched on and the secrets exist)
 [triggers]
 crons = ["* * * * *"]
+
+# Sign in with Google (public client ID, not a secret) and the Google accounts that own the first family
+[vars]
+GOOGLE_CLIENT_ID = "639692840591-5n38eqpu4b4ldic333i7668ijuceb1iv.apps.googleusercontent.com"
+OWNER_EMAILS = "imghidora@gmail.com,igorrash@gmail.com"
