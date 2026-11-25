@@ -5,3 +5,16 @@ wrangler.toml
 README.md
 .wrangler/
 node_modules/
+# dev tooling, tests and docs (never served)
+test/
+e2e/
+docs/
+scripts/
+package.json
+package-lock.json
+vitest.config.mjs
+playwright.config.mjs
+.gitignore
+.dev.vars
+test-results/
+playwright-report/

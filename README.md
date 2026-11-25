@@ -1,8 +1,31 @@
 # Calendora
 
+[![CI](https://github.com/gh1d0ra/calendora/actions/workflows/ci.yml/badge.svg)](https://github.com/gh1d0ra/calendora/actions/workflows/ci.yml)
+![Cloudflare Workers + D1](https://img.shields.io/badge/runs%20on-Cloudflare%20Workers%20%2B%20D1-f38020)
+![No build step](https://img.shields.io/badge/front%20end-vanilla%20JS-f7df1e)
+
 A touch-friendly family wall calendar that runs in any web browser. Put it full-screen on a tablet, a spare monitor or a TV and it becomes the family's shared hub.
 
 **Live site:** https://gh1d0ra.github.io/calendora/
+
+| Week (wall tablet) | Chores |
+|---|---|
+| ![Week view](docs/screenshots/tablet-week.png) | ![Chores with stars](docs/screenshots/tablet-chores.png) |
+| **Month** | **Meal plan** |
+| ![Month view](docs/screenshots/tablet-month.png) | ![Meal plan](docs/screenshots/tablet-meals.png) |
+
+<sub>Screenshots use the app's built-in demo family. Phone layout: [one day per screen](docs/screenshots/phone-week.png).</sub>
+
+## How it's built
+
+- **One Cloudflare Worker** serves the app and a JSON API on **D1** (SQLite), with a cron trigger (AnyList sync) and **Workers AI** (recipe photos, sorting lists).
+- **Google sign-in, verified on the server:** RS256 ID tokens are checked against Google's keys. Families have owner, admin and member roles and invite links; wall tablets use a PBKDF2-hashed passcode with rate limiting.
+- **Stateless HMAC-signed sessions**, with a per-family epoch for "sign out all devices".
+- **Offline-first sync:** each device keeps a full copy. Saves are conditional on the board version, and conflicts are resolved with a section-by-section three-way merge.
+- **Repeating events, time zones and iCalendar** are handled in `lib/core.js` (RRULE, EXDATE, moved and cancelled instances, daylight-saving changes) with no libraries.
+- **Tested at three levels:** Vitest unit tests, API tests inside the real Workers runtime (workerd) with a local D1, and Playwright end-to-end tests on tablet and phone sizes, all run in GitHub Actions.
+
+More: [architecture](docs/architecture.md) (diagrams, sync and sign-in flows) and [design decisions](docs/decisions/).
 
 ## Features
 
@@ -45,15 +68,44 @@ It's plain HTML, CSS and JavaScript with no build step.
 
 Keyboard shortcuts: `←` and `→` move through dates, `t` jumps to today, `d`, `w`, `m` and `s` switch calendar views, and `n` adds a new item.
 
+## Development and tests
+
+```bash
+npm install                                   # dev tools only (Vitest, Playwright, wrangler)
+npm test                                      # unit tests (lib/core.js) + Worker API tests in workerd with a local D1
+npx playwright install chromium               # once
+npm run test:e2e                              # browser tests against wrangler dev on a fresh, seeded database
+```
+
+To try the app locally with a server:
+```bash
+node scripts/e2e-seed.mjs .wrangler/dev       # a test family: code E2ETEST, tablet passcode e2e-pass
+npx wrangler dev --local --persist-to .wrangler/dev
+```
+Then open http://127.0.0.1:8787 and choose "Wall tablet? Sign in with a family code". `--local` keeps remote bindings such as Workers AI switched off.
+
+| Suite | What it covers |
+| --- | --- |
+| `test/unit/core.test.js` | Every repeat option; month-end and leap-day rules; daylight-saving changes; a check that Calendora's repeat logic and the RRULE it sends to Google give the same days; iCalendar parsing and expansion (zones, overrides, cancellations, COUNT/UNTIL/BYDAY/BYMONTHDAY) |
+| `test/worker/auth.test.js` | Google ID token checks (signature, audience, issuer, expiry, verified email), tablet passcodes and rate limiting, tampered cookies, sign out everywhere |
+| `test/worker/family.test.js` | Creating and joining families, invites, roles, removing and leaving, handing over ownership, the new-family limit, board versions and conflicts, isolation between families |
+| `test/worker/outside.test.js` | iCal proxy with its saved-copy fallback, feeds limited to the family's own, recipe import from schema.org data |
+| `e2e/calendar.spec.mjs` | A tablet signs in, adds events (including a weekly one), the event is saved, and a second device sees it, at tablet and phone sizes |
+
+
 ## Files
 
 | File | What it does |
 | --- | --- |
 | `index.html` | App shell |
 | `styles.css` | All styling, including the tablet and phone layouts |
-| `app.js` | State, rendering, the recurrence engine, modals, the photo frame, weather, Google sync and family sync |
+| `app.js` | State, rendering, modals, the photo frame, weather, Google sync and family sync |
+| `lib/core.js` | Repeat rules and the iCalendar engine (no DOM; unit-tested) |
 | `src/worker.js` | Cloudflare Worker: static files plus `/api` (passcode, sessions, shared board in D1) |
 | `wrangler.toml` | Worker settings and the D1 binding |
+| `test/`, `e2e/` | Vitest (unit + Worker) and Playwright tests |
+| `docs/` | Architecture, decision records, screenshots |
+| `.assetsignore` | Files the Worker must never serve (tests, docs, tooling) |
 
 ## Credits
 

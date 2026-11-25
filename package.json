@@ -1,0 +1,18 @@
+{
+  "name": "calendora",
+  "private": true,
+  "description": "Family wall calendar: vanilla JS app + Cloudflare Worker (D1). Dev tools only; the app has no build step.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.9.2",
+    "@playwright/test": "^1.65.1",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.168.0"
+  }
+}

@@ -1,8 +1,8 @@
 // Calendora service worker: lets the app install and start offline.
 // Pages and files: network first (so updates show right away), cached copy when offline.
 // /api/* (passcode, family board, AnyList, etc.) is never cached.
-const CACHE = 'calendora-shell-v1';
-const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon.svg'];
+const CACHE = 'calendora-shell-v2';
+const SHELL = ['/', '/index.html', '/styles.css', '/lib/core.js', '/app.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon.svg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
