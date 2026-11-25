@@ -4,7 +4,10 @@
 'use strict';
 (() => {
   // ---------------------------------------------------------------- constants
-  const STORE_KEY = 'calendora.v1';
+  // Demo (?demo, and the GitHub Pages copy): the built-in made-up family, fresh on every visit,
+  // never signed in and never mixed with a real family's data on this device.
+  const DEMO = new URLSearchParams(location.search).has('demo') || /\.github\.io$/.test(location.hostname);
+  const STORE_KEY = DEMO ? 'calendora.demo' : 'calendora.v1';
   const COLORS = ['#F26B4F', '#F2A541', '#E3B505', '#5BBF8A', '#2BB3A3', '#3FA7D6', '#5C7CFA', '#9B6BDF', '#E56BB0', '#8D6E63'];
   const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const DOW_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -130,6 +133,7 @@
   }
 
   function load() {
+    if (DEMO) return seed(defaults());
     try {
       const raw = localStorage.getItem(STORE_KEY);
       if (raw) {
@@ -333,7 +337,7 @@
     open() {
       if (this.db) return Promise.resolve(this.db);
       return new Promise((res, rej) => {
-        const r = indexedDB.open('calendora', 1);
+        const r = indexedDB.open(DEMO ? 'calendora-demo' : 'calendora', 1);
         r.onupgradeneeded = () => r.result.createObjectStore('photos', { keyPath: 'id' });
         r.onsuccess = () => { this.db = r.result; res(this.db); };
         r.onerror = () => rej(r.error);
@@ -1377,7 +1381,7 @@
     const four = Array.from({ length: n }, (_, k) => news.items[(news.idx + k) % news.items.length]);
     box.hidden = false;
     box.classList.remove('in'); void box.offsetWidth;
-    box.innerHTML = `<div class="ss-ev-head">📰 News</div>${four.map(it => `<div class="ssn-item ${it.image ? 'has-img' : ''}" data-link="${esc(it.link || '')}"><div class="ssn-text"><div class="ssn-title">${esc(it.title)}</div><div class="ssn-src">${esc(it.source || '')}${it.time ? ` · ${timeAgo(it.time)}` : ''}</div></div>${it.image ? `<img class="ssn-img" src="${esc(it.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}</div>`).join('')}`;
+    box.innerHTML = `<div class="ss-ev-head">📰 News</div>${four.map(it => `<div class="ssn-item ${it.image ? 'has-img' : ''}" data-link="${esc(it.link || '')}"><div class="ssn-text"><div class="ssn-title">${esc(it.title)}</div><div class="ssn-src">${esc(it.source || '')}${it.time ? ` · ${timeAgo(it.time)}` : ''}</div></div>${it.image ? `<img class="ssn-img" src="${esc(it.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-drop-on-error>` : ''}</div>`).join('')}`;
     box.classList.add('in');
   }
   function startNews() {
@@ -3036,6 +3040,18 @@
     'fam-invite-del'(el) { famCall(`/api/family/invite/${el.dataset.code}`, {}, 'Invite cancelled', 'DELETE'); },
     'fam-remove'(el) { choice(`Remove ${esc(el.dataset.name)}?`, 'They will be signed out and can no longer open your family’s Calendora. You can invite them again later.', [{ label: 'Remove', cls: 'danger', fn: () => famCall('/api/family/member', { id: el.dataset.id, remove: true }, 'Removed') }]); },
     'fam-passcode'() { tabletPasscodeModal(); },
+    async 'fam-feed'() {
+      const d = await famCall('/api/family/feed', {}, '');
+      if (!d) return;
+      const row = (label, link) => `<div class="fam-invite"><b>${esc(label)}</b><code>${esc(link)}</code><button type="button" class="btn small" data-action="fam-copy" data-link="${esc(link)}">Copy</button><a class="btn small" href="${esc(link)}">Open</a></div>`;
+      modal({
+        title: 'Subscribe on your phone',
+        body: `<p class="muted">Open a link on the phone, or copy it into your calendar app’s “Add subscribed calendar”. Calendars refresh about every hour.</p>
+          <div class="fam-invites">${row('Everyone', d.webcal)}${(d.members || []).map(m => row(m.name || 'Member', m.webcal)).join('')}</div>`,
+        saveLabel: 'Done', onSave() { return true; },
+      });
+    },
+    'fam-feed-off'() { choice('Turn off the subscribe link?', 'Phones subscribed with it stop getting updates. You can make a new link any time.', [{ label: 'Turn off', cls: 'danger', fn: () => famCall('/api/family/feed', {}, 'Subscribe link turned off', 'DELETE') }]); },
     'fam-passcode-off'() { choice('Turn off tablet sign-in?', 'New tablets won’t be able to sign in with the family code. Tablets already signed in stay in until you use “Sign out all other devices”.', [{ label: 'Turn off', cls: 'danger', fn: () => famCall('/api/family/passcode', { remove: true }, 'Tablet sign-in turned off') }]); },
     'fam-leave'() {
       choice('Leave this family?', 'This device signs out and you won’t see the family’s Calendora anymore. Your family’s data stays for everyone else. If you’re the owner, the next person becomes the owner.', [{
@@ -3354,7 +3370,7 @@
   const isTyping = () => /INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || '');
 
   async function cloudInit() {
-    if (location.protocol === 'file:' || /\.github\.io$/.test(location.hostname)) { cloud.mode = 'local'; return; }
+    if (DEMO || location.protocol === 'file:') { cloud.mode = 'local'; return; }
     let r;
     try { r = await api('/api/session'); }
     catch (e) {
@@ -3407,6 +3423,7 @@
     renderCloudStatus();
     icalRefresh();
     gSnapLoad();
+    liveConnect();
   }
 
   function cloudQueuePush() {
@@ -3456,10 +3473,12 @@
     }
   }
 
-  async function cloudPull() {
+  async function cloudPull(now = false) {
     if (!cloudOn() || cloud.pushing) return;
+    // While the live connection is up and nothing is waiting, a poll a minute is plenty
+    if (!now && live.open && live.behind <= cloud.version && Date.now() - cloud.lastSync < 55000) return;
     if (JSON.stringify(sharedPart()) !== cloud.lastStr) { cloudPush(); return; }
-    if (modalOpen || isTyping()) return; // don't redraw under someone's fingers
+    if (modalOpen || isTyping()) return; // don't redraw under someone's fingers (the 15 s timer tries again)
     try {
       const r = await api(`/api/board?since=${cloud.version}`);
       if (r.status === 401) { cloud.signedIn = false; showLock(); return; }
@@ -3476,6 +3495,35 @@
     renderCloudStatus();
   }
 
+  // ---- live updates: a WebSocket to the family's room (src/room.js) says when the board changed,
+  // so other screens update within a second. Polling stays as the safety net, just slower while live.
+  const live = { ws: null, open: false, retry: 1000, behind: 0, screens: 0, ping: null };
+  function liveConnect() {
+    if (DEMO || !cloudOn() || live.ws || !('WebSocket' in window)) return;
+    let ws;
+    try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/live`); } catch (e) { return; }
+    live.ws = ws;
+    ws.onopen = () => {
+      live.open = true; live.retry = 1000;
+      clearInterval(live.ping); live.ping = setInterval(() => { try { ws.send('ping'); } catch (e) { /* closing */ } }, 45000);
+      cloudPull(true); // catch anything saved while we were away
+    };
+    ws.onmessage = ev => {
+      let m; try { m = JSON.parse(ev.data); } catch (e) { return; } // 'pong'
+      if (m.type === 'board' && m.version > cloud.version) { live.behind = Math.max(live.behind, m.version); cloudPull(true); }
+      if (m.type === 'presence') { live.screens = m.screens; renderCloudStatus(); }
+      if (m.type === 'ical') icalRefresh({ only: m.feed }); // the server got a calendar back after its source was down
+    };
+    ws.onclose = ev => {
+      clearInterval(live.ping);
+      live.ws = null; live.open = false; live.screens = 0;
+      if (ev.code === 4001) { cloudPull(true); return; } // "sign out all devices": the next request shows the sign-in screen
+      if (cloudOn()) setTimeout(liveConnect, live.retry + Math.random() * 1000);
+      live.retry = Math.min(live.retry * 2, 60000);
+    };
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') liveConnect(); });
+
   function renderCloudStatus() {
     const pill = $('#cloudPill');
     if (pill) {
@@ -3487,7 +3535,8 @@
   }
   function cloudStatusText() {
     if (cloud.offline) return 'Offline right now — changes are kept on this device and sync when the connection is back.';
-    return cloud.lastSync ? `Shared with your family’s signed-in devices · synced ${timeAgo(cloud.lastSync)}.` : 'Shared with your family’s signed-in devices.';
+    const others = live.open && live.screens > 1 ? ` · live on ${live.screens} screens` : live.open ? ' · live' : '';
+    return cloud.lastSync ? `Shared with your family’s signed-in devices${others} · synced ${timeAgo(cloud.lastSync)}.` : `Shared with your family’s signed-in devices${others}.`;
   }
 
   // Clean slate for a different family on this device (keeps only this device's display preferences)
@@ -3515,7 +3564,7 @@
       <p class="muted">${invited ? 'You’ve been invited to join a family on Calendora. Sign in with Google to accept.' : 'Your family’s calendar, chores, meals and lists — together on every screen.'}</p>
       <div id="gSignIn" class="g-signin"><button class="btn primary block" type="button" data-action="google-signin">Sign in with Google</button></div>
       <div class="lock-error" role="alert">${esc(error)}</div>
-      ${invited ? '' : '<p class="muted small">New here? Sign in with Google, then create your family — it’s free.</p>'}
+      ${invited ? '' : '<p class="muted small">New here? Sign in with Google, then create your family — it’s free. Or <a href="/?demo">look around a demo family</a> first.</p>'}
       <details class="tablet-signin"><summary>Wall tablet? Sign in with a family code</summary>
         <form data-form="login">
           <input name="family" placeholder="Family code (from Settings)" autocomplete="off" autocapitalize="characters" maxlength="10" />
@@ -3763,6 +3812,9 @@
       <h4>Wall tablets</h4>
       <p class="muted small">Tablets without a Google account sign in with your family code <b class="fam-code">${esc(f.code || '…')}</b> and a tablet passcode.</p>
       ${can ? `<div class="row wrap"><button class="btn" data-action="fam-passcode">${f.hasPasscode ? 'Change tablet passcode' : 'Set a tablet passcode'}</button>${f.hasPasscode ? '<button class="btn ghost" data-action="fam-passcode-off">Turn off tablet sign-in</button>' : ''}</div>` : (f.hasPasscode ? '' : '<p class="muted small">Ask the family’s owner to set a tablet passcode.</p>')}
+      ${can ? `<h4>Subscribe on your phone</h4>
+        <p class="muted small">See Calendora’s events in Apple, Google or Outlook calendar. Anyone with the link can see your events, so share it only with family. Making a new link turns the old one off.</p>
+        <div class="row wrap"><button class="btn" data-action="fam-feed">${fam.info && fam.info.feed ? 'Make a new link' : 'Create subscribe link'}</button>${fam.info && fam.info.feed ? '<button class="btn ghost" data-action="fam-feed-off">Turn off</button>' : ''}</div>` : ''}
       <div class="row wrap fam-actions">
         <button class="btn" data-action="cloud-sync">Sync now</button>
         ${can || cloud.device ? '<button class="btn" data-action="cloud-logout-all">Sign out all other devices</button>' : ''}
@@ -3935,6 +3987,17 @@
   setInterval(fetchWeather, 30 * 60 * 1000);
 
   // ---------------------------------------------------------------- boot
+  // News pictures that fail to load are removed (a listener instead of inline onerror, which the CSP forbids)
+  document.addEventListener('error', e => { if (e.target instanceof HTMLImageElement && e.target.hasAttribute('data-drop-on-error')) e.target.remove(); }, true);
+  if (DEMO) {
+    const pill = document.createElement('a');
+    pill.className = 'cloud-pill demo-pill';
+    pill.id = 'demoPill';
+    pill.href = 'https://calendora.igorrash.workers.dev/';
+    pill.title = 'A made-up family. Changes stay in this tab and reset when you reload.';
+    pill.innerHTML = 'Demo family · <b>Start yours</b>';
+    $('#cloudPill').after(pill);
+  }
   render();
   fetchWeather();
   setInterval(() => { renderClock(); tickBaby(); }, 1000);

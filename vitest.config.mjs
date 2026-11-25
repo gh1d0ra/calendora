@@ -15,6 +15,15 @@ export default defineConfig({
             remoteBindings: false, // never talk to the real Cloudflare account (Workers AI, etc.) from tests
             miniflare: {
               bindings: { GOOGLE_CLIENT_ID: 'test-client.apps.googleusercontent.com', OWNER_EMAILS: 'owner@example.com' },
+              // Stand-in for the calendora-ics Python Worker (its own tests: services/ics-py/tests). It echoes what
+              // the main Worker sent, so the tests can check the token, family and member handling.
+              serviceBindings: {
+                async ICS(request) {
+                  const body = await request.json();
+                  const titles = (body.board.events || []).map(e => `SUMMARY:${e.title}`).join('\r\n');
+                  return new Response(`BEGIN:VCALENDAR\r\nX-WR-CALNAME:${body.name}\r\nX-MEMBER:${body.member || ''}\r\n${titles}\r\nEND:VCALENDAR\r\n`, { headers: { 'Content-Type': 'text/calendar' } });
+                },
+              },
             },
           }),
         ],

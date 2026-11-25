@@ -7,7 +7,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test:py": "cd services/ics-py && uv run --python 3.12 --with pytest pytest -q",
+    "metrics": "node scripts/metrics.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.9.2",

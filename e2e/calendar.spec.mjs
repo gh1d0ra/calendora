@@ -68,3 +68,18 @@ test('a weekly event repeats next week', async ({ page }, info) => {
   for (let i = 0; i < steps; i++) await page.keyboard.press('ArrowRight');
   await expect(page.locator('#view').getByText(title).first()).toBeVisible();
 });
+
+test('live: another screen shows a new event within seconds, without reloading', async ({ page, browser }, info) => {
+  const otherContext = await browser.newContext({ timezoneId: 'America/New_York' });
+  await otherContext.route(offline, route => route.abort());
+  const other = await otherContext.newPage();
+  await signInTablet(other);
+  await signInTablet(page);
+  await other.waitForTimeout(1000); // let its live connection open
+
+  const title = `Swim ${info.project.name} ${Date.now()}`;
+  await addEvent(page, title);
+  // polling alone would take up to a minute while live; the room's push brings it in seconds
+  await expect(other.locator('#view').getByText(title)).toBeVisible({ timeout: 5000 });
+  await otherContext.close();
+});

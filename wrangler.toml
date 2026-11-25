@@ -27,3 +27,43 @@ GOOGLE_CLIENT_ID = "639692840591-5n38eqpu4b4ldic333i7668ijuceb1iv.apps.googleuse
 # OWNER_EMAILS (the Google accounts that own the first family) is set on the Worker in Cloudflare, not here,
 # so personal addresses stay out of the repo. keep_vars above keeps it on every deploy. To change it:
 #   npx wrangler secret put OWNER_EMAILS
+
+# Live updates: one FamilyRoom Durable Object per family (src/room.js), SQLite-backed so it runs on Workers Free
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "FamilyRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FamilyRoom"]
+
+# Background jobs (AnyList sync, re-fetching calendars whose source is down): retried with backoff,
+# then parked in the dead-letter queue. Create once with:
+#   npx wrangler queues create calendora-jobs && npx wrangler queues create calendora-jobs-dlq
+[[queues.producers]]
+binding = "JOBS"
+queue = "calendora-jobs"
+
+[[queues.consumers]]
+queue = "calendora-jobs"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 6
+dead_letter_queue = "calendora-jobs-dlq"
+
+# Request and job metrics (scripts/metrics.mjs, docs/observability.md); the dataset is created on first write
+[[analytics_engine_datasets]]
+binding = "METRICS"
+dataset = "calendora_events"
+
+# The running version id, recorded with every metric so a new version can be compared with the old
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
+[observability]
+enabled = true
+
+# Subscribe feeds are rendered by the Python Worker in services/ics-py (deploy it first: it has no public URL)
+[[services]]
+binding = "ICS"
+service = "calendora-ics"

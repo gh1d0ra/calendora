@@ -1,0 +1,20 @@
+{
+  "members": [
+    { "id": "m1", "name": "Mom" },
+    { "id": "m2", "name": "Dad" },
+    { "id": "m3", "name": "Ana" }
+  ],
+  "events": [
+    { "id": "e1", "title": "Dentist", "date": "2026-11-03", "startTime": "10:00", "endTime": "11:00", "memberIds": ["m3", "m1"], "location": "Bright Smiles, Suite 4; 2nd floor" },
+    { "id": "e2", "title": "School drop-off", "date": "2026-11-02", "startTime": "07:45", "endTime": "08:15", "recur": "weekdays", "memberIds": ["m2"], "exdates": ["2026-11-26", "2026-11-27"] },
+    { "id": "e3", "title": "Yoga", "date": "2026-11-02", "startTime": "06:30", "endTime": "07:30", "recur": "weekly", "recurDays": [1, 3, 5], "memberIds": ["m1"], "until": "2026-12-18" },
+    { "id": "e4", "title": "Piano lesson", "date": "2026-11-04", "startTime": "15:30", "endTime": "16:15", "recur": "weekly", "memberIds": ["m3"] },
+    { "id": "e5", "title": "Trash out", "date": "2026-11-05", "allDay": true, "recur": "biweekly" },
+    { "id": "e6", "title": "Rent", "date": "2026-01-31", "allDay": true, "recur": "monthly" },
+    { "id": "e7", "title": "Ana's birthday 🎂", "date": "2024-02-29", "allDay": true, "recur": "yearly", "memberIds": ["m3"] },
+    { "id": "e8", "title": "Grandma visits", "date": "2026-12-22", "endDate": "2026-12-28", "allDay": true, "notes": "Airport pickup at 3 pm.\nBring the car seat, blankets, and snacks for a very, very long line of text that must fold" },
+    { "id": "e9", "title": "Daily vitamins", "date": "2026-11-01", "startTime": "08:00", "recur": "daily", "until": "2026-11-10", "exdates": ["2026-11-04"] },
+    { "title": "Late movie", "date": "2026-11-07", "startTime": "23:00", "endTime": "01:00" },
+    { "id": "bad", "title": "No date" }
+  ]
+}

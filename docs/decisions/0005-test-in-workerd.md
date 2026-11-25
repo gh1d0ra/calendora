@@ -15,5 +15,5 @@ Only the outside world is faked:
 Remote bindings (Workers AI) are switched off in tests and in `wrangler dev --local`, so they never touch the real account.
 
 ## Consequences
-- The tests exercise the real SQL, crypto and cookie handling. The 37 API tests run in a few seconds.
+- The tests exercise the real SQL, crypto and cookie handling. The Worker tests (sessions, families, live updates, queues, feeds) run in a few seconds.
 - The browser tests use `wrangler dev --local` on a fresh database seeded by `scripts/e2e-seed.mjs`.

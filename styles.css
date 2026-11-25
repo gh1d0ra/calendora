@@ -466,6 +466,8 @@ form:not(.is-allday) .only-timed, form.is-allday .only-allday, form.is-repeat .o
 
 /* ------------------------------------------------ family sharing */
 .cloud-pill { display: inline-flex; align-items: center; padding: 8px 14px; border-radius: 999px; background: #FFF1E0; color: #B5651D; font-weight: 800; font-size: 13px; white-space: nowrap; }
+.demo-pill { background: #E8F1FE; color: #2F5FB3; text-decoration: none; gap: 4px; }
+.demo-pill b { text-decoration: underline; }
 .lock { position: fixed; inset: 0; z-index: 90; background: var(--bg); display: grid; place-items: center; padding: 24px; }
 .lock-card { width: min(420px, 100%); background: var(--surface); border-radius: 28px; box-shadow: var(--shadow-lg); padding: 36px 32px 28px; display: flex; flex-direction: column; gap: 12px; text-align: center; align-items: stretch; }
 .lock-card h1 { margin: 6px 0 0; font-size: 28px; font-weight: 900; }

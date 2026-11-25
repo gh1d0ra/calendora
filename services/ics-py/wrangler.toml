@@ -1,0 +1,9 @@
+# calendora-ics: Python Worker that renders a family's events as an iCalendar feed.
+# Only the main Calendora Worker can call it (service binding ICS); it has no public URL.
+#   cd services/ics-py && npx wrangler deploy
+name = "calendora-ics"
+main = "src/entry.py"
+compatibility_date = "2025-11-17" # class-based entry points (WorkerEntrypoint) for Python
+compatibility_flags = ["python_workers"]
+workers_dev = false
+preview_urls = false

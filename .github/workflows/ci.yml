@@ -26,12 +26,38 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Syntax check (no build step, so make sure every file parses)
-        run: for f in app.js lib/core.js sw.js; do node --check "$f"; done && node --input-type=module --check < src/worker.js
+        run: for f in app.js lib/core.js sw.js; do node --check "$f"; done && for f in src/worker.js src/room.js; do node --input-type=module --check < "$f"; done
       - run: npx vitest run
       - name: Only app files are served (dev files stay private)
         run: |
           npx wrangler deploy --dry-run --outdir dist
-          for f in package.json test e2e docs scripts; do grep -qx "$f/\?" .assetsignore || { echo "$f is not in .assetsignore"; exit 1; }; done
+          for f in package.json test e2e docs scripts infra services load; do grep -qx "$f/\?" .assetsignore || { echo "$f is not in .assetsignore"; exit 1; }; done
+
+  python:
+    name: Python feed Worker (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Renderer tests (also keeps test/fixtures/calendora-feed.ics current)
+        working-directory: services/ics-py
+        run: uv run --python 3.12 --with pytest pytest -q
+      - name: The Python Worker bundles
+        working-directory: services/ics-py
+        run: npx -y wrangler@4 deploy --dry-run --outdir dist
+
+  terraform:
+    name: Terraform (fmt + validate)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
 
   e2e:
     name: Browser tests (Playwright)

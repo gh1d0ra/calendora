@@ -4,7 +4,12 @@
  *   config(key, value)              passcode hash, session signing key, session epoch
  *   board(id, data, version, ...)   the shared family board as one JSON document
  *   login_attempts(ip, ...)         failed passcode attempts, for rate limiting
+ *
+ * Live updates: each family has a FamilyRoom Durable Object (src/room.js) that its open screens
+ * hold a WebSocket to. Saves notify the room, the room tells the screens to fetch the board.
  */
+import { FamilyRoom, notifyRoom } from './room.js';
+export { FamilyRoom };
 
 const SESSION_COOKIE = 'cal_session';
 const SESSION_TTL = 60 * 60 * 24 * 365; // one year: a wall display should stay signed in
@@ -25,7 +30,7 @@ const td = new TextDecoder();
 const json = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers },
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers },
   });
 
 const b64u = buf => {
@@ -40,6 +45,8 @@ const fromB64u = s => {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 };
+const sha256Hex = async s => [...new Uint8Array(await crypto.subtle.digest('SHA-256', te.encode(s)))].map(b => b.toString(16).padStart(2, '0')).join('');
+
 function safeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
   let diff = 0;
@@ -448,6 +455,7 @@ async function anylistSync(env, fid, { force = false } = {}) {
   let status;
   try {
     status = await anylistSyncOnce(db, fid, creds, board, row.version, cfg);
+    if (status && status.boardVersion) await notifyRoom(env, fid, { type: 'board', version: status.boardVersion });
   } catch (e) {
     if (e.code === 'retry') status = null;
     else status = { ok: false, error: e.message || 'AnyList sync failed', at: Date.now() };
@@ -535,6 +543,7 @@ async function anylistSyncOnce(db, fid, creds, board, version, cfg) {
     const res = await db.prepare('UPDATE board SET data = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?')
       .bind(JSON.stringify(board), Date.now(), fid, version).run();
     if (!res.meta || res.meta.changes !== 1) throw new ALError('board changed', 'retry');
+    version += 1;
   }
   if (ops.length) {
     const bin = alEncodeOps(ops); // like the official clients, no user id
@@ -542,7 +551,7 @@ async function anylistSyncOnce(db, fid, creds, board, version, cfg) {
   }
   const validA = new Set(al.items.map(a => a.id));
   await setConfig(db, famKey(fid, 'anylist_map'), JSON.stringify({ cl: cl.id, al: al.id, links, ignored: [...ignored].filter(id => validA.has(id)) }));
-  return { ok: true, at: Date.now(), listName: al.name, calendoraList: cl.name, pushed: ops.length, pulled, items: links.length };
+  return { ok: true, at: Date.now(), listName: al.name, calendoraList: cl.name, pushed: ops.length, pulled, items: links.length, boardVersion: changed ? version : 0 };
 }
 
 // ------------------------------------------------------------------ API
@@ -618,6 +627,7 @@ async function handleApi(request, env, url, ctx) {
   const method = request.method;
 
   const origin = `${url.protocol}//${url.host}`;
+  const later = p => (ctx && ctx.waitUntil ? ctx.waitUntil(p) : p); // after the response is sent
   const clientId = env.GOOGLE_CLIENT_ID || '';
   const ownerEmails = String(env.OWNER_EMAILS || '').toLowerCase().split(/[\s,]+/).filter(Boolean);
   const familyOut = f => (f ? { id: f.id, name: f.name, code: f.code, hasPasscode: !!f.passcode } : null);
@@ -637,6 +647,40 @@ async function handleApi(request, env, url, ctx) {
     if (acc.family_id !== inv.family_id) { await joinFamily(acc, inv.family_id, 'member'); await db.prepare('UPDATE invites SET uses = uses + 1 WHERE code = ?').bind(inv.code).run(); }
     return { ok: true };
   };
+
+  // Browsers report what the (report-only) Content-Security-Policy in _headers would have blocked.
+  // Logged and counted; nothing is stored. No session needed: reports come from any page load.
+  if (path === '/api/csp-report' && method === 'POST') {
+    const text = (await request.text()).slice(0, 8000);
+    let r = {};
+    try { const j = JSON.parse(text); r = j['csp-report'] || (Array.isArray(j) && j[0] && j[0].body) || {}; } catch (e) { /* not JSON */ }
+    const directive = String(r['effective-directive'] || r.effectiveDirective || r['violated-directive'] || 'unknown').split(' ')[0];
+    let blocked = String(r['blocked-uri'] || r.blockedURL || '');
+    try { blocked = blocked.startsWith('http') ? new URL(blocked).origin : blocked; } catch (e) { /* keep as is */ }
+    console.warn(JSON.stringify({ event: 'csp', directive, blocked: blocked.slice(0, 200), page: String(r['document-uri'] || r.documentURL || '').replace(/[?#].*$/, '').slice(0, 200) }));
+    try { if (env.METRICS) env.METRICS.writeDataPoint({ indexes: ['csp'], blobs: ['csp', directive, blocked.slice(0, 200)], doubles: [1] }); } catch (e) { /* never fail */ }
+    return new Response(null, { status: 204 });
+  }
+
+  // The subscribe feed itself. Calendar apps can't sign in, so the secret in the URL is the key.
+  // Rendering happens in the calendora-ics Python Worker (services/ics-py), reached by service binding.
+  const feedMatch = path.match(/^\/api\/feed\/([A-Za-z0-9_-]{20,64})\.ics$/);
+  if (feedMatch && method === 'GET') {
+    const fid = await getConfig(db, `feedtok:${await sha256Hex(feedMatch[1])}`);
+    const fam = fid ? await getFamily(db, fid) : null;
+    if (!fam) return json({ error: 'This subscribe link was turned off or replaced' }, 404);
+    if (!env.ICS) return json({ error: 'Calendar feeds are not set up on this server' }, 501);
+    const member = url.searchParams.get('member');
+    const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(fid).first();
+    const board = row ? JSON.parse(row.data) : {};
+    const res = await env.ICS.fetch('https://ics/render', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: fam.name, member: member && /^[\w-]{1,40}$/.test(member) ? member : null, board: { members: board.members || [], events: board.events || [] } }),
+    });
+    if (!res.ok) return json({ error: 'Could not build the calendar' }, 502);
+    return new Response(res.body, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'private, max-age=900', 'Content-Disposition': 'inline; filename="calendora.ics"', 'X-Content-Type-Options': 'nosniff' } });
+  }
 
   if (path === '/api/session' && method === 'GET') {
     const sess = await readSession(request, db);
@@ -726,11 +770,33 @@ async function handleApi(request, env, url, ctx) {
     const invites = isManager(sess) ? await db.prepare('SELECT code, created_at, expires_at, uses, max_uses FROM invites WHERE family_id = ? AND expires_at > ? ORDER BY created_at DESC').bind(fid, Date.now()).all() : { results: [] };
     return json({
       family: familyOut(fam), me: sess.sub || null, canManage: isManager(sess),
+      feed: isManager(sess) ? !!(await getConfig(db, famKey(fid, 'feed_hash'))) : undefined,
       people: (people.results || []).map(p => ({ id: p.sub, email: p.email, name: p.name, picture: p.picture, role: p.role, lastSeen: p.last_seen })),
       invites: (invites.results || []).map(i => ({ code: i.code, link: `${origin}/?invite=${i.code}`, expires: i.expires_at, uses: i.uses, maxUses: i.max_uses })),
     });
   }
   if (path.startsWith('/api/family/') && !isManager(sess) && path !== '/api/family/leave') return json({ error: 'Only the family’s owner or an admin can change this' }, 403);
+  // Subscribe link for phone calendars: a secret URL (only its hash is stored). A new link replaces the old one.
+  if (path === '/api/family/feed' && (method === 'POST' || method === 'DELETE')) {
+    const old = await getConfig(db, famKey(fid, 'feed_hash'));
+    if (old) await db.prepare('DELETE FROM config WHERE key = ?').bind(`feedtok:${old}`).run();
+    if (method === 'DELETE') {
+      await db.prepare('DELETE FROM config WHERE key = ?').bind(famKey(fid, 'feed_hash')).run();
+      return json({ ok: true });
+    }
+    const token = b64u(crypto.getRandomValues(new Uint8Array(24)));
+    const hash = await sha256Hex(token);
+    await setConfig(db, `feedtok:${hash}`, fid);
+    await setConfig(db, famKey(fid, 'feed_hash'), hash);
+    const url = `${origin}/api/feed/${token}.ics`;
+    let members = [];
+    try { const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(fid).first(); members = (row ? JSON.parse(row.data).members || [] : []); } catch (e) { members = []; }
+    return json({
+      url, webcal: url.replace(/^https?:/, 'webcal:'),
+      members: members.filter(m => m && m.id).map(m => ({ id: m.id, name: m.name || '', webcal: `${url.replace(/^https?:/, 'webcal:')}?member=${encodeURIComponent(m.id)}` })),
+    });
+  }
+
   if (path === '/api/family/rename' && method === 'POST') {
     const body = await readJson(request);
     const name = String((body && body.name) || '').replace(/\s+/g, ' ').trim().slice(0, 60);
@@ -781,6 +847,7 @@ async function handleApi(request, env, url, ctx) {
   if (path === '/api/logout-all' && method === 'POST') {
     if (sess.account && !isManager(sess)) return json({ error: 'Only the family’s owner or an admin can do this' }, 403);
     await db.prepare('UPDATE families SET epoch = epoch + 1 WHERE id = ?').bind(fid).run();
+    later(notifyRoom(env, fid, { type: 'reauth' })); // close every live connection; screens then find they're signed out
     return json({ ok: true }, 200, { 'Set-Cookie': await signIn(fid, sess.sub) }); // keep this device signed in
   }
 
@@ -789,7 +856,17 @@ async function handleApi(request, env, url, ctx) {
     if (!body || !validPasscode(body.next)) return json({ error: 'Choose a passcode of at least 4 characters' }, 400);
     if (!isManager(sess) && !(fam.passcode && await checkPasscode(fam.passcode, body.current || ''))) return json({ error: 'Current passcode is not right' }, 401);
     await db.prepare('UPDATE families SET passcode = ?, epoch = epoch + 1 WHERE id = ?').bind(await makePasscodeRecord(body.next), fid).run();
+    later(notifyRoom(env, fid, { type: 'reauth' }));
     return json({ ok: true }, 200, { 'Set-Cookie': await signIn(fid, sess.sub) });
+  }
+
+  // Live updates: a WebSocket to this family's room (src/room.js). Same session rules as the board.
+  if (path === '/api/live' && method === 'GET') {
+    if (request.headers.get('Upgrade') !== 'websocket') return json({ error: 'Expected a WebSocket' }, 426);
+    if (!env.ROOMS) return json({ error: 'Live updates are not configured' }, 501);
+    const roomUrl = new URL('https://room/connect');
+    if (sess.device) roomUrl.searchParams.set('device', '1');
+    return env.ROOMS.get(env.ROOMS.idFromName(fid)).fetch(new Request(roomUrl, request));
   }
 
   if (path === '/api/board' && method === 'GET') {
@@ -817,7 +894,8 @@ async function handleApi(request, env, url, ctx) {
     }
     if (res.meta && res.meta.changes === 1) {
       const al = body.data.settings && body.data.settings.anylist;
-      if (al && al.on && ctx && ctx.waitUntil) ctx.waitUntil(anylistSync(env, fid).catch(() => {}));
+      if (al && al.on) later(enqueue(env, { kind: 'anylist', fid }).catch(() => {}));
+      later(notifyRoom(env, fid, { type: 'board', version: body.baseVersion + 1 }));
       return json({ ok: true, version: body.baseVersion + 1, updatedAt: now });
     }
     // someone else saved first: send back what is on the server
@@ -1066,49 +1144,116 @@ async function handleApi(request, env, url, ctx) {
     // Fetch a calendar feed (e.g. an iCloud "Public Calendar" link) on the family's behalf.
     // The link is looked up in the shared board, so only feeds the family added can be fetched.
     const id = url.searchParams.get('feed') || '';
-    const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(fid).first();
-    let feeds = [];
-    try { feeds = row ? (JSON.parse(row.data).icalFeeds || []) : []; } catch (e) { feeds = []; }
-    const feed = Array.isArray(feeds) ? feeds.find(f => f && f.id === id) : null;
-    if (!feed) return json({ error: 'Calendar not found' }, 404);
-    let target = String(feed.url || '').trim().replace(/^webcals?:\/\//i, 'https://');
-    let host = '';
-    try { host = new URL(target).hostname; } catch (e) { return json({ error: 'That calendar link is not valid' }, 400); }
-    if (!/^https?:\/\//i.test(target)) return json({ error: 'The link must start with webcal:// or https://' }, 400);
-    if (host !== 'localhost') target = target.replace(/^http:\/\//i, 'https://');
-    const saved = () => db.prepare('SELECT data, updated_at FROM snapshots WHERE key = ?').bind(`ical:${fid}:${id}`).first();
-    const fallback = async (msg, status) => {
-      const row = await saved().catch(() => null);
-      if (row) return new Response(row.data, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store', 'X-Snapshot-At': String(row.updated_at), 'X-Snapshot-Reason': encodeURIComponent(msg) } });
-      return json({ error: msg }, status);
-    };
-    let r;
-    try {
-      r = await fetch(target, {
-        headers: { Accept: 'text/calendar, text/plain, */*', 'User-Agent': 'Calendora/1.0' },
-        redirect: 'follow',
-        ...(url.searchParams.get('fresh') ? {} : { cf: { cacheTtl: 600, cacheEverything: true } }),
-      });
-    } catch (e) { return fallback('Could not reach that calendar', 502); }
-    if (r.status === 404 || r.status === 403) return fallback('Calendar link not found — is Public Calendar still turned on?', 502);
-    if (!r.ok) return fallback(`The calendar server answered ${r.status}`, 502);
-    const text = await r.text();
-    if (text.length > 10000000) return json({ error: 'That calendar is too large' }, 502);
-    if (!text.includes('BEGIN:VCALENDAR')) return fallback('That link is not a calendar feed', 502);
-    if (ctx) ctx.waitUntil(putSnapshot(db, `ical:${fid}:${id}`, text).catch(() => {}));
-    else await putSnapshot(db, `ical:${fid}:${id}`, text).catch(() => {});
-    return new Response(text, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store' } });
+    const got = await fetchIcal(db, fid, id, { fresh: !!url.searchParams.get('fresh') });
+    if (got.text) {
+      await later(putSnapshot(db, `ical:${fid}:${id}`, got.text).catch(() => {}));
+      return new Response(got.text, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store' } });
+    }
+    if (!got.retry) return json({ error: got.error }, got.status);
+    // The source is down: serve the saved copy, and let the job queue keep trying in the background
+    later(queueIcalRetry(env, fid, id).catch(() => {}));
+    const row = await db.prepare('SELECT data, updated_at FROM snapshots WHERE key = ?').bind(`ical:${fid}:${id}`).first().catch(() => null);
+    if (row) return new Response(row.data, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store', 'X-Snapshot-At': String(row.updated_at), 'X-Snapshot-Reason': encodeURIComponent(got.error) } });
+    return json({ error: got.error }, got.status);
   }
 
   return json({ error: 'Not found' }, 404);
 }
 
+// ------------------------------------------------------------------ background jobs (Cloudflare Queues)
+// Slow or flaky work (AnyList sync, re-fetching a calendar whose source is down) runs from the
+// calendora-jobs queue: retried with exponential backoff, and parked in calendora-jobs-dlq after
+// the last try, so one family's broken feed never holds up anyone else. Without a queue binding
+// (older deploys, local tools) jobs simply run in place.
+const ICAL_RETRY_GAP = 10 * 60 * 1000; // at most one queued re-fetch per feed per 10 minutes
+
+async function enqueue(env, job, opts = {}) {
+  if (env.JOBS) return env.JOBS.send(job, opts);
+  return runJob(env, job).catch(e => console.warn('job failed', job.kind, e && e.message));
+}
+
+async function queueIcalRetry(env, fid, feed) {
+  const key = famKey(fid, `ical_retry:${feed}`);
+  if (Date.now() - Number((await getConfig(env.DB, key)) || 0) < ICAL_RETRY_GAP) return;
+  await setConfig(env.DB, key, String(Date.now()));
+  if (env.JOBS) await env.JOBS.send({ kind: 'ical', fid, feed }, { delaySeconds: 300 });
+}
+
+/** Looks a feed up in the family's board and fetches it: { text } or { error, status, retry }. */
+async function fetchIcal(db, fid, id, { fresh = false } = {}) {
+  const row = await db.prepare('SELECT data FROM board WHERE id = ?').bind(fid).first();
+  let feeds = [];
+  try { feeds = row ? (JSON.parse(row.data).icalFeeds || []) : []; } catch (e) { feeds = []; }
+  const feed = Array.isArray(feeds) ? feeds.find(f => f && f.id === id) : null;
+  if (!feed) return { error: 'Calendar not found', status: 404 };
+  let target = String(feed.url || '').trim().replace(/^webcals?:\/\//i, 'https://');
+  let host = '';
+  try { host = new URL(target).hostname; } catch (e) { return { error: 'That calendar link is not valid', status: 400 }; }
+  if (!/^https?:\/\//i.test(target)) return { error: 'The link must start with webcal:// or https://', status: 400 };
+  if (host !== 'localhost') target = target.replace(/^http:\/\//i, 'https://');
+  let r;
+  try {
+    r = await fetch(target, {
+      headers: { Accept: 'text/calendar, text/plain, */*', 'User-Agent': 'Calendora/1.0' },
+      redirect: 'follow',
+      ...(fresh ? {} : { cf: { cacheTtl: 600, cacheEverything: true } }),
+    });
+  } catch (e) { return { error: 'Could not reach that calendar', status: 502, retry: true }; }
+  if (r.status === 404 || r.status === 403) return { error: 'Calendar link not found — is Public Calendar still turned on?', status: 502, retry: true };
+  if (!r.ok) return { error: `The calendar server answered ${r.status}`, status: 502, retry: true };
+  const text = await r.text();
+  if (text.length > 10000000) return { error: 'That calendar is too large', status: 502 };
+  if (!text.includes('BEGIN:VCALENDAR')) return { error: 'That link is not a calendar feed', status: 502, retry: true };
+  return { text };
+}
+
+class RetryLater extends Error {}
+
+/** Runs one background job. Throws RetryLater when it should be tried again. */
+async function runJob(env, job) {
+  await ensureSchema(env.DB);
+  if (job.kind === 'anylist') {
+    const st = await anylistSync(env, job.fid, { force: !!job.force });
+    if (st && (st.skipped === 'retry' || st.skipped === 'busy')) throw new RetryLater(`anylist ${st.skipped}`);
+    return st;
+  }
+  if (job.kind === 'ical') {
+    const got = await fetchIcal(env.DB, job.fid, job.feed, { fresh: true });
+    if (got.text) {
+      await putSnapshot(env.DB, `ical:${job.fid}:${job.feed}`, got.text);
+      await notifyRoom(env, job.fid, { type: 'ical', feed: job.feed }); // open screens reload that calendar
+      return { ok: true };
+    }
+    if (got.retry) throw new RetryLater(got.error);
+    return { dropped: got.error }; // the feed was removed or its link is invalid: nothing to retry
+  }
+  return { dropped: 'unknown job' };
+}
+
+// ------------------------------------------------------------------ observability
+// One Analytics Engine data point per API request and per background job (dataset calendora_events),
+// plus a structured JSON log line for Workers Logs. See docs/observability.md and scripts/metrics.mjs.
+//   blobs:  type ('api' | 'job'), route or job kind, outcome ('2xx', '409', 'retry', …), version
+//   doubles: ms, status (or attempts for jobs)
+function record(env, type, name, outcome, ms, num) {
+  const version = (env.CF_VERSION_METADATA && env.CF_VERSION_METADATA.id || 'local').slice(0, 8);
+  try { if (env.METRICS) env.METRICS.writeDataPoint({ indexes: [type], blobs: [type, name, outcome, version], doubles: [ms, num] }); } catch (e) { /* never break a request */ }
+  const line = JSON.stringify({ event: type, name, outcome, ms, ...(type === 'api' ? { status: num } : { attempts: num }), version });
+  if (outcome === '5xx' || outcome === 'dropped') console.error(line); else if (outcome === 'retry') console.warn(line); else console.log(line);
+}
+// Board conflicts (409) are worth seeing on their own: they show how often the three-way merge runs
+const outcomeOf = status => (status === 409 || status === 101 || status === 429 ? String(status) : `${Math.floor(status / 100)}xx`);
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
-      try { return await handleApi(request, env, url, ctx); }
-      catch (e) { return json({ error: 'Server error' }, 500); }
+      const started = Date.now();
+      let res;
+      try { res = await handleApi(request, env, url, ctx); }
+      catch (e) { console.error(JSON.stringify({ event: 'api-exception', path: url.pathname, error: e && e.message })); res = json({ error: 'Server error' }, 500); }
+      record(env, 'api', url.pathname.replace(/\/+$/, '').replace(/\/[0-9a-f-]{16,}$/i, '/:id'), outcomeOf(res.status), Date.now() - started, res.status);
+      return res;
     }
     return env.ASSETS.fetch(request);
   },
@@ -1117,7 +1262,24 @@ export default {
     ctx.waitUntil((async () => {
       await ensureSchema(env.DB);
       const rows = await env.DB.prepare('SELECT id FROM families WHERE anylist IS NOT NULL OR id = ? LIMIT 50').bind(BOARD_ID).all();
-      for (const f of rows.results || []) await anylistSync(env, f.id).catch(() => {});
+      const jobs = (rows.results || []).map(f => ({ body: { kind: 'anylist', fid: f.id } }));
+      if (env.JOBS && jobs.length) await env.JOBS.sendBatch(jobs);
+      else for (const j of jobs) await runJob(env, j.body).catch(() => {});
     })());
+  },
+  async queue(batch, env) {
+    for (const msg of batch.messages) {
+      const started = Date.now();
+      const kind = (msg.body && msg.body.kind) || 'unknown';
+      try {
+        const out = await runJob(env, msg.body);
+        msg.ack();
+        record(env, 'job', kind, out && out.dropped ? 'dropped' : 'ok', Date.now() - started, msg.attempts);
+      } catch (e) {
+        // 30 s, 1, 2, 4, 8 min …, capped at an hour; after max_retries it lands in the dead-letter queue
+        msg.retry({ delaySeconds: Math.min(3600, 30 * 2 ** (msg.attempts - 1)) });
+        record(env, 'job', kind, 'retry', Date.now() - started, msg.attempts);
+      }
+    }
   },
 };
