@@ -1,0 +1,2 @@
+# iCalendar requires CRLF line endings; store fixtures byte for byte
+*.ics -text
