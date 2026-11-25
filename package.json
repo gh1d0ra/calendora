@@ -14,7 +14,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.9.2",
     "@playwright/test": "^1.65.1",
-    "vitest": "^4.1.12",
+    "vitest": "^5.1.1",
     "wrangler": "^4.168.0"
   }
 }
