@@ -21,3 +21,4 @@ playwright-report/
 infra/
 services/
 load/
+.gitattributes
