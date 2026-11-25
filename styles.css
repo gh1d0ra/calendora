@@ -318,7 +318,7 @@ button { cursor: pointer; }
 .member-row:first-child { border-top: 0; }
 .row { display: flex; gap: 12px; align-items: flex-end; }
 .row.wrap { flex-wrap: wrap; }
-.row > .field { flex: 1; }
+.row > .field { flex: 1; min-width: 0; }
 .settings form.row input { flex: 1; }
 .geo-results { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 
@@ -898,3 +898,10 @@ hr.soft { border: 0; border-top: 1px solid var(--line, #eee6dd); margin: 14px 0;
 .danger-text { color: #C62828; }
 .anylist-login { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; max-width: 420px; }
 .anylist-login h4 { margin: 0; }
+/* phones: let the date / time fields in forms wrap instead of pushing the form (and its Save button) off screen */
+@media (max-width: 600px) {
+  .modal .row { flex-wrap: wrap; }
+  .modal .row > .field { flex: 1 1 120px; }
+  .modal .row > .field:has(input[type=date]) { flex-basis: 100%; }
+  .modal .field input { min-width: 0; }
+}

@@ -1,0 +1,55 @@
+name: CI
+
+# Deploys are done by Cloudflare Workers Builds on every push to main; this workflow tests.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit + Worker tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Syntax check (no build step, so make sure every file parses)
+        run: for f in app.js lib/core.js sw.js; do node --check "$f"; done && node --input-type=module --check < src/worker.js
+      - run: npx vitest run
+      - name: Only app files are served (dev files stay private)
+        run: |
+          npx wrangler deploy --dry-run --outdir dist
+          for f in package.json test e2e docs scripts; do grep -qx "$f/\?" .assetsignore || { echo "$f is not in .assetsignore"; exit 1; }; done
+
+  e2e:
+    name: Browser tests (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            /tmp/calendora-playwright-report
+            /tmp/calendora-test-results
+          retention-days: 14

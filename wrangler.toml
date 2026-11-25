@@ -21,7 +21,9 @@ binding = "AI"
 [triggers]
 crons = ["* * * * *"]
 
-# Sign in with Google (public client ID, not a secret) and the Google accounts that own the first family
+# Sign in with Google (public client ID, not a secret)
 [vars]
 GOOGLE_CLIENT_ID = "639692840591-5n38eqpu4b4ldic333i7668ijuceb1iv.apps.googleusercontent.com"
-OWNER_EMAILS = "owner-1@removed.invalid,owner-2@removed.invalid"
+# OWNER_EMAILS (the Google accounts that own the first family) is set on the Worker in Cloudflare, not here,
+# so personal addresses stay out of the repo. keep_vars above keeps it on every deploy. To change it:
+#   npx wrangler secret put OWNER_EMAILS
